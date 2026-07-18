@@ -2,6 +2,7 @@ import os
 
 from database import SessionLocal
 from auth.security import criar_hash_senha
+from sqlalchemy import func
 import models
 
 
@@ -70,7 +71,16 @@ def executar():
         )
 
         if not barbearia:
+            ultimo_codigo = (
+                db.query(
+                    func.max(models.Barbearia.codigo)
+                )
+                .scalar()
+                or 0
+            )
+
             barbearia = models.Barbearia(
+                codigo=ultimo_codigo + 1,
                 nome=BARBEARIA_NOME,
                 slug=BARBEARIA_SLUG,
                 responsavel="Administrador BarbSist",
