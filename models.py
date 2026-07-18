@@ -1,79 +1,479 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean,Date, DateTime, ForeignKey
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Float,
+    Boolean,
+    Date,
+    DateTime,
+    ForeignKey,
+    UniqueConstraint
+)
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
 from database import Base
+from models_mixins import BarbeariaMixin
 
 class Barbearia(Base):
     __tablename__ = "barbearias"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
 
-    nome = Column(String, nullable=False)
-    telefone_whatsapp = Column(String, nullable=True)
-    endereco = Column(String, nullable=True)
-    instagram = Column(String, nullable=True)
-    logo_url = Column(String, nullable=True)
-    slogan = Column(String, nullable=True)
-    imagem_capa_url = Column(String, nullable=True)
+    codigo = Column(
+        Integer,
+        unique=True,
+        nullable=False,
+        index=True
+    )
 
-    ativa = Column(Boolean, default=True)
+    slug = Column(
+        String,
+        unique=True,
+        nullable=False,
+        index=True
+    )
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    # Dados cadastrais
+    nome = Column(
+        String,
+        nullable=False
+    )
 
-class Cliente(Base):
+    responsavel = Column(
+        String,
+        nullable=True
+    )
+
+    email = Column(
+        String,
+        nullable=True
+    )
+
+    telefone = Column(
+        String,
+        nullable=True
+    )
+
+    telefone_whatsapp = Column(
+        String,
+        nullable=True
+    )
+
+    cnpj = Column(
+        String,
+        nullable=True
+    )
+
+    # Endereço
+    endereco = Column(
+        String,
+        nullable=True
+    )
+
+    cidade = Column(
+        String,
+        nullable=True
+    )
+
+    estado = Column(
+        String,
+        nullable=True
+    )
+
+    cep = Column(
+        String,
+        nullable=True
+    )
+
+    # Identidade visual
+    instagram = Column(
+        String,
+        nullable=True
+    )
+
+    logo_url = Column(
+        String,
+        nullable=True
+    )
+
+    slogan = Column(
+        String,
+        nullable=True
+    )
+
+    imagem_capa_url = Column(
+        String,
+        nullable=True
+    )
+
+    # Preparação para personalização visual
+    cor_primaria = Column(
+        String,
+        default="#111827",
+        nullable=False
+    )
+
+    cor_secundaria = Column(
+        String,
+        default="#2563EB",
+        nullable=False
+    )
+
+    cor_fundo = Column(
+        String,
+        default="#F3F4F6",
+        nullable=False
+    )
+
+    cor_sidebar = Column(
+        String,
+        default="#111827",
+        nullable=False
+    )
+
+    cor_texto_sidebar = Column(
+        String,
+        default="#FFFFFF",
+        nullable=False
+    )
+
+    cor_destaque = Column(
+        String,
+        default="#2563EB",
+        nullable=False
+    )
+
+    # Controle
+    ativa = Column(
+        Boolean,
+        default=True,
+        nullable=False
+    )
+
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False
+    )
+
+class SequenciaBarbearia(Base):
+    __tablename__ = "sequencias_barbearia"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "barbearia_id",
+            "tipo",
+            name="uq_sequencia_barbearia_tipo"
+        ),
+    )
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    barbearia_id = Column(
+        Integer,
+        ForeignKey(
+            "barbearias.id",
+            ondelete="RESTRICT"
+        ),
+        nullable=False,
+        index=True
+    )
+
+    tipo = Column(
+        String,
+        nullable=False
+    )
+
+    ultimo_numero = Column(
+        Integer,
+        default=0,
+        nullable=False
+    )
+
+    data_atualizacao = Column(
+        DateTime,
+        default=datetime.now,
+        onupdate=datetime.now,
+        nullable=False
+    )
+
+    barbearia = relationship(
+        "Barbearia"
+    )
+
+class Cliente(BarbeariaMixin, Base):
     __tablename__ = "clientes"
 
-    id = Column(Integer, primary_key=True, index=True)
-    nome = Column(String, nullable=False)
-    telefone = Column(String)
-    email = Column(String)
-    observacoes = Column(String)
-    ativo = Column(Boolean, default=True)
+    __table_args__ = (
+        UniqueConstraint(
+            "barbearia_id",
+            "codigo",
+            name="uq_cliente_barbearia_codigo"
+        ),
+    )
 
-    comandas = relationship("Comanda", back_populates="cliente")
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
 
+    numero_sequencial = Column(
+        Integer,
+        nullable=False,
+        index=True
+    )
 
-class Barbeiro(Base):
+    codigo = Column(
+        String,
+        nullable=False,
+        index=True
+    )
+
+    nome = Column(
+        String,
+        nullable=False
+    )
+
+    telefone = Column(
+        String,
+        nullable=True
+    )
+
+    email = Column(
+        String,
+        nullable=True
+    )
+
+    observacoes = Column(
+        String,
+        nullable=True
+    )
+
+    ativo = Column(
+        Boolean,
+        default=True,
+        nullable=False
+    )
+
+    comandas = relationship(
+        "Comanda",
+        back_populates="cliente"
+    )
+
+class Barbeiro(BarbeariaMixin, Base):
     __tablename__ = "barbeiros"
 
-    id = Column(Integer, primary_key=True, index=True)
-    nome = Column(String, nullable=False)
-    telefone = Column(String)
-    email = Column(String, nullable=True)
-    tipo = Column(String, default="associado")
-    percentual_comissao = Column(Float, default=50.0)
-    especialidades = Column(String, nullable=True)
-    observacoes = Column(String, nullable=True)
-    ativo = Column(Boolean, default=True)
+    __table_args__ = (
+        UniqueConstraint(
+            "barbearia_id",
+            "codigo",
+            name="uq_barbeiro_barbearia_codigo"
+        ),
+    )
 
-    comandas = relationship("Comanda", back_populates="barbeiro")
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    numero_sequencial = Column(
+        Integer,
+        nullable=False,
+        index=True
+    )
+
+    codigo = Column(
+        String,
+        nullable=False,
+        index=True
+    )
+
+    nome = Column(
+        String,
+        nullable=False
+    )
+
+    telefone = Column(
+        String,
+        nullable=True
+    )
+
+    email = Column(
+        String,
+        nullable=True
+    )
+
+    tipo = Column(
+        String,
+        default="associado",
+        nullable=False
+    )
+
+    percentual_comissao = Column(
+        Float,
+        default=50.0,
+        nullable=False
+    )
+
+    especialidades = Column(
+        String,
+        nullable=True
+    )
+
+    observacoes = Column(
+        String,
+        nullable=True
+    )
+
+    ativo = Column(
+        Boolean,
+        default=True,
+        nullable=False
+    )
+
+    comandas = relationship(
+        "Comanda",
+        back_populates="barbeiro"
+    )
 
 
-class Servico(Base):
+class Servico(BarbeariaMixin, Base):
     __tablename__ = "servicos"
 
-    id = Column(Integer, primary_key=True, index=True)
-    nome = Column(String, nullable=False)
-    preco = Column(Float, nullable=False)
-    tempo_medio_minutos = Column(Integer, default=30)
-    ativo = Column(Boolean, default=True)
+    __table_args__ = (
+        UniqueConstraint(
+            "barbearia_id",
+            "codigo",
+            name="uq_servico_barbearia_codigo"
+        ),
+        UniqueConstraint(
+            "barbearia_id",
+            "nome",
+            name="uq_servico_barbearia_nome"
+        ),
+    )
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    numero_sequencial = Column(
+        Integer,
+        nullable=False,
+        index=True
+    )
+
+    codigo = Column(
+        String,
+        nullable=False,
+        index=True
+    )
+
+    nome = Column(
+        String,
+        nullable=False
+    )
+
+    preco = Column(
+        Float,
+        nullable=False
+    )
+
+    tempo_medio_minutos = Column(
+        Integer,
+        default=30,
+        nullable=False
+    )
+
+    ativo = Column(
+        Boolean,
+        default=True,
+        nullable=False
+    )
 
 
-class Produto(Base):
+class Produto(BarbeariaMixin, Base):
     __tablename__ = "produtos"
 
-    id = Column(Integer, primary_key=True, index=True)
-    nome = Column(String, nullable=False)
-    categoria = Column(String)
-    preco_custo = Column(Float, default=0)
-    preco_venda = Column(Float, nullable=False)
-    estoque = Column(Integer, default=0)
-    codigo_qr = Column(String)
-    ativo = Column(Boolean, default=True)
+    __table_args__ = (
+        UniqueConstraint(
+            "barbearia_id",
+            "codigo",
+            name="uq_produto_barbearia_codigo"
+        ),
+    )
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    numero_sequencial = Column(
+        Integer,
+        nullable=False,
+        index=True
+    )
+
+    codigo = Column(
+        String,
+        nullable=False,
+        index=True
+    )
+
+    nome = Column(
+        String,
+        nullable=False
+    )
+
+    categoria = Column(
+        String,
+        nullable=True
+    )
+
+    preco_custo = Column(
+        Float,
+        default=0,
+        nullable=False
+    )
+
+    preco_venda = Column(
+        Float,
+        nullable=False
+    )
+
+    estoque = Column(
+        Integer,
+        default=0,
+        nullable=False
+    )
+
+    codigo_qr = Column(
+        String,
+        nullable=True
+    )
+
+    ativo = Column(
+        Boolean,
+        default=True,
+        nullable=False
+    )
 
 
-class Comanda(Base):
+class Comanda(BarbeariaMixin, Base):
     __tablename__ = "comandas"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -209,20 +609,66 @@ class Comissao(Base):
     comanda = relationship("Comanda")
 
 
-class Usuario(Base):
+class Usuario(BarbeariaMixin, Base):
     __tablename__ = "usuarios"
 
-    id = Column(Integer, primary_key=True, index=True)
-    nome = Column(String, nullable=False)
-    email = Column(String, unique=True, index=True, nullable=False)
-    senha_hash = Column(String, nullable=False)
-    perfil = Column(String, default="admin")
-    barbeiro_id = Column(Integer, ForeignKey("barbeiros.id"), nullable=True)
-    ativo = Column(Boolean, default=True)
-    data_criacao = Column(DateTime, default=datetime.now)
+    __table_args__ = (
+        UniqueConstraint(
+            "barbearia_id",
+            "email",
+            name="uq_usuario_barbearia_email"
+        ),
+    )
 
-    barbeiro = relationship("Barbeiro")
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
 
+    nome = Column(
+        String,
+        nullable=False
+    )
+
+    email = Column(
+        String,
+        index=True,
+        nullable=False
+    )
+
+    senha_hash = Column(
+        String,
+        nullable=False
+    )
+
+    perfil = Column(
+        String,
+        default="admin",
+        nullable=False
+    )
+
+    barbeiro_id = Column(
+        Integer,
+        ForeignKey("barbeiros.id"),
+        nullable=True
+    )
+
+    ativo = Column(
+        Boolean,
+        default=True,
+        nullable=False
+    )
+
+    data_criacao = Column(
+        DateTime,
+        default=datetime.now,
+        nullable=False
+    )
+
+    barbeiro = relationship(
+        "Barbeiro"
+    )
     
 
 class Estilo(Base):
@@ -337,8 +783,16 @@ class Agendamento(Base):
     )
 
 
-class Plano(Base):
+class Plano(BarbeariaMixin, Base):
     __tablename__ = "planos"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "barbearia_id",
+            "nome",
+            name="uq_plano_barbearia_nome"
+        ),
+    )
 
     id = Column(
         Integer,
@@ -387,7 +841,6 @@ class Plano(Base):
         cascade="all, delete-orphan"
     )
 
-
 class PlanoServico(Base):
     __tablename__ = "planos_servicos"
 
@@ -418,7 +871,7 @@ class PlanoServico(Base):
         "Servico"
     )
 
-class AssinaturaCliente(Base):
+class AssinaturaCliente(BarbeariaMixin, Base):
     __tablename__ = "assinaturas_clientes"
 
     id = Column(Integer, primary_key=True, index=True)

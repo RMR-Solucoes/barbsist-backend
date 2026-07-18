@@ -13,6 +13,10 @@ from services.plano_service import (
     usar_plano_service
 )
 
+from auth.tenant import (
+    buscar_da_barbearia,
+    obter_barbearia_id
+)
 
 def calcular_total_devido_comanda(itens):
     """
@@ -33,28 +37,30 @@ def calcular_total_devido_comanda(itens):
 
 def obter_assinatura_disponivel_comanda_service(
     db,
-    comanda_id: int
+    comanda_id: int,
+    usuario_logado
 ):
-    comanda = (
-        db.query(models.Comanda)
-        .filter(
-            models.Comanda.id == comanda_id
-        )
-        .first()
+    barbearia_id = obter_barbearia_id(
+        usuario_logado
     )
 
-    if not comanda:
-        raise HTTPException(
-            status_code=404,
-            detail="Comanda não encontrada"
+    comanda = buscar_da_barbearia(
+        db=db,
+        model=models.Comanda,
+        registro_id=comanda_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado=(
+            "Comanda não encontrada."
         )
+    )
 
     if comanda.cliente_id is None:
         return {
             "possui_assinatura": False,
             "pode_usar_plano": False,
             "motivo": (
-                "A comanda não está vinculada a um cliente"
+                "A comanda não está vinculada "
+                "a um cliente."
             ),
             "assinatura": None
         }
@@ -62,8 +68,11 @@ def obter_assinatura_disponivel_comanda_service(
     assinaturas = (
         db.query(models.AssinaturaCliente)
         .filter(
-            models.AssinaturaCliente.cliente_id ==
-            comanda.cliente_id
+            models.AssinaturaCliente.barbearia_id
+            == barbearia_id,
+
+            models.AssinaturaCliente.cliente_id
+            == comanda.cliente_id
         )
         .order_by(
             models.AssinaturaCliente.id.desc()
@@ -76,7 +85,8 @@ def obter_assinatura_disponivel_comanda_service(
             "possui_assinatura": False,
             "pode_usar_plano": False,
             "motivo": (
-                "O cliente não possui assinatura cadastrada"
+                "O cliente não possui assinatura "
+                "cadastrada."
             ),
             "assinatura": None
         }
@@ -89,7 +99,9 @@ def obter_assinatura_disponivel_comanda_service(
             assinatura.status_pagamento
         )
 
-        atualizar_status_assinatura(assinatura)
+        atualizar_status_assinatura(
+            assinatura
+        )
 
         if (
             assinatura.status != status_anterior
@@ -111,79 +123,19 @@ def obter_assinatura_disponivel_comanda_service(
         None
     )
 
-    if assinatura_disponivel:
-        plano = (
-            db.query(models.Plano)
-            .filter(
-                models.Plano.id ==
-                assinatura_disponivel.plano_id
-            )
-            .first()
-        )
-
-        servicos_permitidos_ids = [
-            vinculo.servico_id
-            for vinculo in (
-                db.query(models.PlanoServico)
-                .filter(
-                    models.PlanoServico.plano_id ==
-                    assinatura_disponivel.plano_id
-                )
-                .all()
-            )
-        ]
-
-        pode_usar = (
-            assinatura_disponivel.usos_disponiveis
-            is not None
-            and assinatura_disponivel.usos_disponiveis > 0
-        )
-
-        return {
-            "possui_assinatura": True,
-            "pode_usar_plano": pode_usar,
-            "motivo": (
-                None
-                if pode_usar
-                else "O plano não possui usos disponíveis"
-            ),
-            "assinatura": {
-                "id": assinatura_disponivel.id,
-                "cliente_id": (
-                    assinatura_disponivel.cliente_id
-                ),
-                "plano_id": (
-                    assinatura_disponivel.plano_id
-                ),
-                "plano_nome": (
-                    plano.nome if plano else None
-                ),
-                "status": assinatura_disponivel.status,
-                "status_pagamento": (
-                    assinatura_disponivel
-                    .status_pagamento
-                ),
-                "usos_disponiveis": (
-                    assinatura_disponivel
-                    .usos_disponiveis
-                ),
-                "data_proximo_vencimento": (
-                    assinatura_disponivel
-                    .data_proximo_vencimento
-                ),
-                "servicos_permitidos_ids": (
-                    servicos_permitidos_ids
-                )
-            }
-        }
-
-    assinatura_recente = assinaturas[0]
+    assinatura_exibida = (
+        assinatura_disponivel
+        or assinaturas[0]
+    )
 
     plano = (
         db.query(models.Plano)
         .filter(
-            models.Plano.id ==
-            assinatura_recente.plano_id
+            models.Plano.id
+            == assinatura_exibida.plano_id,
+
+            models.Plano.barbearia_id
+            == barbearia_id
         )
         .first()
     )
@@ -192,43 +144,73 @@ def obter_assinatura_disponivel_comanda_service(
         vinculo.servico_id
         for vinculo in (
             db.query(models.PlanoServico)
+            .join(
+                models.Plano,
+                models.Plano.id
+                == models.PlanoServico.plano_id
+            )
             .filter(
-                models.PlanoServico.plano_id ==
-                assinatura_recente.plano_id
+                models.PlanoServico.plano_id
+                == assinatura_exibida.plano_id,
+
+                models.Plano.barbearia_id
+                == barbearia_id
             )
             .all()
         )
     ]
 
+    pode_usar = (
+        assinatura_disponivel is not None
+        and assinatura_disponivel.usos_disponiveis
+        is not None
+        and assinatura_disponivel.usos_disponiveis > 0
+    )
+
+    if pode_usar:
+        motivo = None
+
+    elif assinatura_disponivel is not None:
+        motivo = (
+            "O plano não possui usos disponíveis."
+        )
+
+    else:
+        motivo = (
+            "Assinatura indisponível para uso. "
+            f"Status: {assinatura_exibida.status}. "
+            "Pagamento: "
+            f"{assinatura_exibida.status_pagamento}."
+        )
+
     return {
         "possui_assinatura": True,
-        "pode_usar_plano": False,
-        "motivo": (
-            "Assinatura indisponível para uso. "
-            f"Status: {assinatura_recente.status}. "
-            "Pagamento: "
-            f"{assinatura_recente.status_pagamento}."
-        ),
+        "pode_usar_plano": pode_usar,
+        "motivo": motivo,
         "assinatura": {
-            "id": assinatura_recente.id,
+            "id": assinatura_exibida.id,
             "cliente_id": (
-                assinatura_recente.cliente_id
+                assinatura_exibida.cliente_id
             ),
             "plano_id": (
-                assinatura_recente.plano_id
+                assinatura_exibida.plano_id
             ),
             "plano_nome": (
-                plano.nome if plano else None
+                plano.nome
+                if plano
+                else None
             ),
-            "status": assinatura_recente.status,
+            "status": (
+                assinatura_exibida.status
+            ),
             "status_pagamento": (
-                assinatura_recente.status_pagamento
+                assinatura_exibida.status_pagamento
             ),
             "usos_disponiveis": (
-                assinatura_recente.usos_disponiveis
+                assinatura_exibida.usos_disponiveis
             ),
             "data_proximo_vencimento": (
-                assinatura_recente
+                assinatura_exibida
                 .data_proximo_vencimento
             ),
             "servicos_permitidos_ids": (
@@ -237,24 +219,29 @@ def obter_assinatura_disponivel_comanda_service(
         }
     }
 
-
 def usar_plano_em_item_comanda_service(
     db,
     comanda_id: int,
     item_id: int,
-    assinatura_id: int
+    assinatura_id: int,
+    usuario_logado
 ):
     try:
-        comanda = db.query(models.Comanda).filter(
-            models.Comanda.id == comanda_id,
-            models.Comanda.status == "aberta"
-        ).first()
+        comanda = buscar_da_barbearia(
+            db=db,
+            model=models.Comanda,
+            registro_id=comanda_id,
+            usuario=usuario_logado,
+            mensagem_nao_encontrado=(
+                "Comanda não encontrada ou já fechada."
+            )
+        )
 
-        if not comanda:
+        if comanda.status != "aberta":
             raise HTTPException(
                 status_code=404,
                 detail=(
-                    "Comanda não encontrada ou já fechada"
+                    "Comanda não encontrada ou já fechada."
                 )
             )
 
@@ -263,19 +250,26 @@ def usar_plano_em_item_comanda_service(
                 status_code=400,
                 detail=(
                     "A comanda precisa estar vinculada "
-                    "a um cliente para utilizar o plano"
+                    "a um cliente para utilizar o plano."
                 )
             )
 
-        item = db.query(models.ItemComanda).filter(
-            models.ItemComanda.id == item_id,
-            models.ItemComanda.comanda_id == comanda_id
-        ).first()
+        item = (
+            db.query(models.ItemComanda)
+            .filter(
+                models.ItemComanda.id == item_id,
+                models.ItemComanda.comanda_id
+                == comanda.id
+            )
+            .first()
+        )
 
         if not item:
             raise HTTPException(
                 status_code=404,
-                detail="Item não encontrado nesta comanda"
+                detail=(
+                    "Item não encontrado nesta comanda."
+                )
             )
 
         if item.tipo != "servico":
@@ -283,7 +277,7 @@ def usar_plano_em_item_comanda_service(
                 status_code=400,
                 detail=(
                     "Somente serviços podem ser "
-                    "utilizados pelo plano"
+                    "utilizados pelo plano."
                 )
             )
 
@@ -291,7 +285,8 @@ def usar_plano_em_item_comanda_service(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "O item não possui um serviço vinculado"
+                    "O item não possui um serviço "
+                    "vinculado."
                 )
             )
 
@@ -300,7 +295,7 @@ def usar_plano_em_item_comanda_service(
                 status_code=400,
                 detail=(
                     "Para utilizar o plano, o serviço "
-                    "deve ser lançado com quantidade 1"
+                    "deve ser lançado com quantidade 1."
                 )
             )
 
@@ -309,7 +304,7 @@ def usar_plano_em_item_comanda_service(
                 status_code=400,
                 detail=(
                     "Este serviço já foi utilizado "
-                    "pelo plano"
+                    "pelo plano."
                 )
             )
 
@@ -318,29 +313,41 @@ def usar_plano_em_item_comanda_service(
                 status_code=400,
                 detail=(
                     "Este item já possui um uso de "
-                    "plano registrado"
+                    "plano registrado."
                 )
             )
 
-        assinatura = db.query(
-            models.AssinaturaCliente
-        ).filter(
-            models.AssinaturaCliente.id ==
-            assinatura_id
-        ).first()
+        assinatura = buscar_da_barbearia(
+            db=db,
+            model=models.AssinaturaCliente,
+            registro_id=assinatura_id,
+            usuario=usuario_logado,
+            mensagem_nao_encontrado=(
+                "Assinatura não encontrada."
+            )
+        )
 
-        if not assinatura:
+        if (
+            assinatura.barbearia_id
+            != comanda.barbearia_id
+        ):
             raise HTTPException(
                 status_code=404,
-                detail="Assinatura não encontrada"
+                detail=(
+                    "Comanda ou assinatura "
+                    "não encontrada."
+                )
             )
 
-        if assinatura.cliente_id != comanda.cliente_id:
+        if (
+            assinatura.cliente_id
+            != comanda.cliente_id
+        ):
             raise HTTPException(
                 status_code=400,
                 detail=(
                     "A assinatura não pertence ao "
-                    "cliente desta comanda"
+                    "cliente desta comanda."
                 )
             )
 
@@ -353,6 +360,7 @@ def usar_plano_em_item_comanda_service(
         uso = usar_plano_service(
             db=db,
             dados=dados_uso,
+            usuario_logado=usuario_logado,
             realizar_commit=False
         )
 
@@ -361,13 +369,19 @@ def usar_plano_em_item_comanda_service(
 
         db.flush()
 
-        itens = db.query(models.ItemComanda).filter(
-            models.ItemComanda.comanda_id ==
-            comanda.id
-        ).all()
+        itens = (
+            db.query(models.ItemComanda)
+            .filter(
+                models.ItemComanda.comanda_id
+                == comanda.id
+            )
+            .all()
+        )
 
-        comanda.total = calcular_total_devido_comanda(
-            itens
+        comanda.total = (
+            calcular_total_devido_comanda(
+                itens
+            )
         )
 
         db.commit()
@@ -379,7 +393,8 @@ def usar_plano_em_item_comanda_service(
 
         return {
             "mensagem": (
-                "Serviço utilizado pelo plano com sucesso"
+                "Serviço utilizado pelo plano "
+                "com sucesso."
             ),
             "comanda_id": comanda.id,
             "item_id": item.id,
@@ -411,38 +426,50 @@ def usar_plano_em_item_comanda_service(
 def fechar_comanda_service(
     db,
     comanda_id: int,
-    forma_pagamento: str
+    forma_pagamento: str,
+    usuario_logado
 ):
     try:
-        comanda = db.query(models.Comanda).filter(
-            models.Comanda.id == comanda_id,
-            models.Comanda.status == "aberta"
-        ).first()
+        comanda = buscar_da_barbearia(
+            db=db,
+            model=models.Comanda,
+            registro_id=comanda_id,
+            usuario=usuario_logado,
+            mensagem_nao_encontrado=(
+                "Comanda não encontrada ou já fechada."
+            )
+        )
 
-        if not comanda:
+        if comanda.status != "aberta":
             raise HTTPException(
                 status_code=404,
                 detail=(
-                    "Comanda não encontrada ou já fechada"
+                    "Comanda não encontrada ou já fechada."
                 )
             )
 
-        itens = db.query(models.ItemComanda).filter(
-            models.ItemComanda.comanda_id ==
-            comanda_id
-        ).all()
+        itens = (
+            db.query(models.ItemComanda)
+            .filter(
+                models.ItemComanda.comanda_id
+                == comanda.id
+            )
+            .all()
+        )
 
         if not itens:
             raise HTTPException(
                 status_code=400,
                 detail=(
                     "Não é possível fechar uma "
-                    "comanda sem itens"
+                    "comanda sem itens."
                 )
             )
 
-        total_devido = calcular_total_devido_comanda(
-            itens
+        total_devido = (
+            calcular_total_devido_comanda(
+                itens
+            )
         )
 
         possui_item_plano = any(
@@ -451,9 +478,24 @@ def fechar_comanda_service(
             for item in itens
         )
 
+        if (
+            total_devido > 0
+            and not forma_pagamento
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Informe a forma de pagamento "
+                    "da comanda."
+                )
+            )
+
         comanda.total = total_devido
 
-        if total_devido == 0 and possui_item_plano:
+        if (
+            total_devido == 0
+            and possui_item_plano
+        ):
             comanda.forma_pagamento = "plano"
 
         elif possui_item_plano:
@@ -462,37 +504,49 @@ def fechar_comanda_service(
             )
 
         else:
-            comanda.forma_pagamento = forma_pagamento
+            comanda.forma_pagamento = (
+                forma_pagamento
+            )
 
         comanda.status = "fechada"
-        comanda.data_fechamento = datetime.now()
+        comanda.data_fechamento = (
+            datetime.now()
+        )
 
         if total_devido > 0:
             registrar_entrada_caixa(
                 db=db,
-                descricao=f"Comanda #{comanda.id}",
+                descricao=(
+                    f"Comanda #{comanda.id}"
+                ),
                 valor=total_devido,
                 forma_pagamento=forma_pagamento
             )
 
-        valor_comissao = calcular_e_registrar_comissao(
-            db=db,
-            barbeiro_id=comanda.barbeiro_id,
-            comanda_id=comanda.id,
-            itens=itens
+        valor_comissao = (
+            calcular_e_registrar_comissao(
+                db=db,
+                barbeiro_id=comanda.barbeiro_id,
+                comanda_id=comanda.id,
+                itens=itens
+            )
         )
 
         db.commit()
         db.refresh(comanda)
 
         return {
-            "mensagem": "Comanda fechada com sucesso",
+            "mensagem": (
+                "Comanda fechada com sucesso."
+            ),
             "comanda_id": comanda.id,
             "total": total_devido,
             "forma_pagamento": (
                 comanda.forma_pagamento
             ),
-            "possui_item_plano": possui_item_plano,
+            "possui_item_plano": (
+                possui_item_plano
+            ),
             "comissao": valor_comissao
         }
 

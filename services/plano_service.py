@@ -4,6 +4,13 @@ from fastapi import HTTPException
 
 import models
 
+from auth.tenant import (
+    buscar_da_barbearia,
+    consultar_da_barbearia,
+    obter_barbearia_id,
+    validar_ids_da_barbearia
+)
+
 
 # =========================
 # CONSTANTES DE STATUS
@@ -26,48 +33,16 @@ PAGAMENTO_PENDENTE = "PENDENTE_PAGAMENTO"
 # PLANOS
 # =========================
 
-def validar_servicos_plano(db, servicos_ids):
-    servicos_ids = list(set(servicos_ids or []))
+from fastapi import HTTPException
 
-    if not servicos_ids:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Selecione pelo menos um serviço "
-                "para o plano"
-            )
-        )
+import models
 
-    servicos = (
-        db.query(models.Servico)
-        .filter(
-            models.Servico.id.in_(servicos_ids),
-            models.Servico.ativo == True
-        )
-        .all()
-    )
-
-    ids_encontrados = {
-        servico.id
-        for servico in servicos
-    }
-
-    ids_invalidos = [
-        servico_id
-        for servico_id in servicos_ids
-        if servico_id not in ids_encontrados
-    ]
-
-    if ids_invalidos:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Serviços não encontrados ou inativos: "
-                f"{ids_invalidos}"
-            )
-        )
-
-    return servicos_ids
+from auth.tenant import (
+    buscar_da_barbearia,
+    consultar_da_barbearia,
+    obter_barbearia_id,
+    validar_ids_da_barbearia
+)
 
 
 def criar_vinculos_servicos_plano(
@@ -84,22 +59,61 @@ def criar_vinculos_servicos_plano(
         db.add(vinculo)
 
 
-def criar_plano_service(db, dados):
+def criar_plano_service(
+    db,
+    dados,
+    usuario_logado
+):
     try:
-        servicos_ids = validar_servicos_plano(
-            db=db,
-            servicos_ids=dados.servicos_ids
+        barbearia_id = obter_barbearia_id(
+            usuario_logado
         )
 
+        servicos_ids = validar_servicos_plano(
+            db=db,
+            servicos_ids=dados.servicos_ids,
+            usuario_logado=usuario_logado
+        )
+
+        nome = dados.nome.strip()
+
+        if not nome:
+            raise HTTPException(
+                status_code=400,
+                detail="O nome do plano é obrigatório."
+            )
+
+        plano_existente = (
+            consultar_da_barbearia(
+                db=db,
+                model=models.Plano,
+                usuario=usuario_logado
+            )
+            .filter(
+                models.Plano.nome == nome
+            )
+            .first()
+        )
+
+        if plano_existente:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Já existe um plano com este nome "
+                    "nesta barbearia."
+                )
+            )
+
         plano = models.Plano(
-            nome=dados.nome,
+            nome=nome,
             descricao=dados.descricao,
             valor=dados.valor,
             quantidade_servicos=(
                 dados.quantidade_servicos
             ),
             validade_dias=dados.validade_dias,
-            ativo=True
+            ativo=True,
+            barbearia_id=barbearia_id
         )
 
         db.add(plano)
@@ -132,29 +146,47 @@ def criar_plano_service(db, dados):
         )
 
 
-def listar_planos_service(db):
-    return (
-        db.query(models.Plano)
-        .filter(models.Plano.ativo == True)
-        .order_by(models.Plano.nome.asc())
-        .all()
+def listar_planos_service(
+    db,
+    usuario_logado,
+    apenas_ativos: bool = True
+):
+    query = consultar_da_barbearia(
+        db=db,
+        model=models.Plano,
+        usuario=usuario_logado
     )
 
-
-def buscar_plano_service(db, plano_id: int):
-    plano = (
-        db.query(models.Plano)
-        .filter(
-            models.Plano.id == plano_id,
-            models.Plano.ativo == True
+    if apenas_ativos:
+        query = query.filter(
+            models.Plano.ativo.is_(True)
         )
-        .first()
+
+    return query.order_by(
+        models.Plano.nome.asc()
+    ).all()
+
+
+def buscar_plano_service(
+    db,
+    plano_id: int,
+    usuario_logado,
+    exigir_ativo: bool = True
+):
+    plano = buscar_da_barbearia(
+        db=db,
+        model=models.Plano,
+        registro_id=plano_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado=(
+            "Plano não encontrado."
+        )
     )
 
-    if not plano:
+    if exigir_ativo and not plano.ativo:
         raise HTTPException(
             status_code=404,
-            detail="Plano não encontrado ou inativo"
+            detail="Plano não encontrado ou inativo."
         )
 
     return plano
@@ -496,37 +528,40 @@ def atualizar_status_assinatura(assinatura):
 def usar_plano_service(
     db,
     dados,
+    usuario_logado,
     realizar_commit: bool = True
 ):
     try:
-        assinatura = (
-            db.query(models.AssinaturaCliente)
-            .filter(
-                models.AssinaturaCliente.id ==
-                dados.assinatura_id
+        assinatura = buscar_da_barbearia(
+            db=db,
+            model=models.AssinaturaCliente,
+            registro_id=dados.assinatura_id,
+            usuario=usuario_logado,
+            mensagem_nao_encontrado=(
+                "Assinatura não encontrada."
             )
-            .first()
         )
 
-        if not assinatura:
-            raise HTTPException(
-                status_code=404,
-                detail="Assinatura não encontrada"
+        comanda = buscar_da_barbearia(
+            db=db,
+            model=models.Comanda,
+            registro_id=dados.comanda_id,
+            usuario=usuario_logado,
+            mensagem_nao_encontrado=(
+                "Comanda não encontrada."
             )
-
-        comanda = (
-            db.query(models.Comanda)
-            .filter(
-                models.Comanda.id ==
-                dados.comanda_id
-            )
-            .first()
         )
 
-        if not comanda:
+        if (
+            comanda.barbearia_id
+            != assinatura.barbearia_id
+        ):
             raise HTTPException(
                 status_code=404,
-                detail="Comanda não encontrada"
+                detail=(
+                    "Comanda ou assinatura "
+                    "não encontrada."
+                )
             )
 
         if (
@@ -537,7 +572,7 @@ def usar_plano_service(
                 status_code=400,
                 detail=(
                     "A assinatura informada não pertence "
-                    "ao cliente desta comanda"
+                    "ao cliente desta comanda."
                 )
             )
 
@@ -555,7 +590,9 @@ def usar_plano_service(
                 )
             )
 
-        atualizar_status_assinatura(assinatura)
+        atualizar_status_assinatura(
+            assinatura
+        )
 
         if assinatura.status != STATUS_ATIVO:
             if realizar_commit:
@@ -589,31 +626,40 @@ def usar_plano_service(
                 )
             )
 
-        servico = (
-            db.query(models.Servico)
-            .filter(
-                models.Servico.id ==
-                dados.servico_id,
-                models.Servico.ativo == True
+        servico = buscar_da_barbearia(
+            db=db,
+            model=models.Servico,
+            registro_id=dados.servico_id,
+            usuario=usuario_logado,
+            mensagem_nao_encontrado=(
+                "Serviço não encontrado ou inativo."
             )
-            .first()
         )
 
-        if not servico:
+        if not servico.ativo:
             raise HTTPException(
                 status_code=404,
                 detail=(
-                    "Serviço não encontrado ou inativo"
+                    "Serviço não encontrado ou inativo."
                 )
             )
 
         uso_existente = (
             db.query(models.UsoPlano)
+            .join(
+                models.Comanda,
+                models.Comanda.id
+                == models.UsoPlano.comanda_id
+            )
             .filter(
-                models.UsoPlano.comanda_id ==
-                dados.comanda_id,
-                models.UsoPlano.servico_id ==
-                dados.servico_id
+                models.UsoPlano.comanda_id
+                == comanda.id,
+
+                models.UsoPlano.servico_id
+                == servico.id,
+
+                models.Comanda.barbearia_id
+                == comanda.barbearia_id
             )
             .first()
         )
@@ -623,17 +669,26 @@ def usar_plano_service(
                 status_code=400,
                 detail=(
                     "Este serviço já foi registrado "
-                    "como pago pelo plano nesta comanda"
+                    "como pago pelo plano nesta comanda."
                 )
             )
 
         servico_permitido = (
             db.query(models.PlanoServico)
+            .join(
+                models.Plano,
+                models.Plano.id
+                == models.PlanoServico.plano_id
+            )
             .filter(
-                models.PlanoServico.plano_id ==
-                assinatura.plano_id,
-                models.PlanoServico.servico_id ==
-                dados.servico_id
+                models.PlanoServico.plano_id
+                == assinatura.plano_id,
+
+                models.PlanoServico.servico_id
+                == servico.id,
+
+                models.Plano.barbearia_id
+                == assinatura.barbearia_id
             )
             .first()
         )
@@ -643,7 +698,7 @@ def usar_plano_service(
                 status_code=400,
                 detail=(
                     "Este serviço não está incluído "
-                    "no plano do cliente"
+                    "no plano do cliente."
                 )
             )
 
@@ -653,20 +708,18 @@ def usar_plano_service(
         if assinatura.usos_disponiveis <= 0:
             raise HTTPException(
                 status_code=400,
-                detail="Sem usos disponíveis no plano"
+                detail="Sem usos disponíveis no plano."
             )
 
         uso = models.UsoPlano(
             assinatura_id=assinatura.id,
-            comanda_id=dados.comanda_id,
-            servico_id=dados.servico_id
+            comanda_id=comanda.id,
+            servico_id=servico.id
         )
 
         assinatura.usos_disponiveis -= 1
 
         db.add(uso)
-
-        # Gera o ID sem finalizar a transação.
         db.flush()
         db.refresh(uso)
 
@@ -700,45 +753,34 @@ def usar_plano_service(
 
 def registrar_pagamento_plano_service(
     db,
-    dados
+    dados,
+    usuario_logado
 ):
-    assinatura = (
-        db.query(models.AssinaturaCliente)
-        .filter(
-            models.AssinaturaCliente.id ==
-            dados.assinatura_id
+    assinatura = buscar_da_barbearia(
+        db=db,
+        model=models.AssinaturaCliente,
+        registro_id=dados.assinatura_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado=(
+            "Assinatura não encontrada."
         )
-        .first()
     )
 
-    if not assinatura:
-        raise HTTPException(
-            status_code=404,
-            detail="Assinatura não encontrada"
-        )
-
-    plano = (
-        db.query(models.Plano)
-        .filter(
-            models.Plano.id ==
-            assinatura.plano_id,
-            models.Plano.ativo == True
-        )
-        .first()
+    plano = buscar_plano_service(
+        db=db,
+        plano_id=assinatura.plano_id,
+        usuario_logado=usuario_logado,
+        exigir_ativo=True
     )
-
-    if not plano:
-        raise HTTPException(
-            status_code=404,
-            detail="Plano não encontrado ou inativo"
-        )
 
     agora = datetime.now()
 
     assinatura.data_ultimo_pagamento = agora
     assinatura.data_proximo_vencimento = (
         agora
-        + timedelta(days=plano.validade_dias)
+        + timedelta(
+            days=plano.validade_dias
+        )
     )
     assinatura.data_fim = (
         assinatura.data_proximo_vencimento
@@ -780,9 +822,25 @@ def registrar_pagamento_plano_service(
     return assinatura
 
 
-def listar_pagamentos_planos_service(db):
+def listar_pagamentos_planos_service(
+    db,
+    usuario_logado
+):
+    barbearia_id = obter_barbearia_id(
+        usuario_logado
+    )
+
     return (
         db.query(models.PagamentoPlano)
+        .join(
+            models.AssinaturaCliente,
+            models.AssinaturaCliente.id
+            == models.PagamentoPlano.assinatura_id
+        )
+        .filter(
+            models.AssinaturaCliente.barbearia_id
+            == barbearia_id
+        )
         .order_by(
             models.PagamentoPlano
             .data_pagamento
@@ -791,16 +849,26 @@ def listar_pagamentos_planos_service(db):
         .all()
     )
 
-
 def listar_pagamentos_assinatura_service(
     db,
-    assinatura_id: int
+    assinatura_id: int,
+    usuario_logado
 ):
+    assinatura = buscar_da_barbearia(
+        db=db,
+        model=models.AssinaturaCliente,
+        registro_id=assinatura_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado=(
+            "Assinatura não encontrada."
+        )
+    )
+
     return (
         db.query(models.PagamentoPlano)
         .filter(
             models.PagamentoPlano.assinatura_id
-            == assinatura_id
+            == assinatura.id
         )
         .order_by(
             models.PagamentoPlano
@@ -813,13 +881,36 @@ def listar_pagamentos_assinatura_service(
 
 def listar_pagamentos_cliente_service(
     db,
-    cliente_id: int
+    cliente_id: int,
+    usuario_logado
 ):
+    cliente = buscar_da_barbearia(
+        db=db,
+        model=models.Cliente,
+        registro_id=cliente_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado=(
+            "Cliente não encontrado."
+        )
+    )
+
+    barbearia_id = obter_barbearia_id(
+        usuario_logado
+    )
+
     return (
         db.query(models.PagamentoPlano)
+        .join(
+            models.AssinaturaCliente,
+            models.AssinaturaCliente.id
+            == models.PagamentoPlano.assinatura_id
+        )
         .filter(
             models.PagamentoPlano.cliente_id
-            == cliente_id
+            == cliente.id,
+
+            models.AssinaturaCliente.barbearia_id
+            == barbearia_id
         )
         .order_by(
             models.PagamentoPlano
@@ -837,45 +928,34 @@ def listar_pagamentos_cliente_service(
 def renovar_assinatura_service(
     db,
     assinatura_id: int,
-    dados
+    dados,
+    usuario_logado
 ):
-    assinatura = (
-        db.query(models.AssinaturaCliente)
-        .filter(
-            models.AssinaturaCliente.id ==
-            assinatura_id
+    assinatura = buscar_da_barbearia(
+        db=db,
+        model=models.AssinaturaCliente,
+        registro_id=assinatura_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado=(
+            "Assinatura não encontrada."
         )
-        .first()
     )
 
-    if not assinatura:
-        raise HTTPException(
-            status_code=404,
-            detail="Assinatura não encontrada"
-        )
-
-    plano = (
-        db.query(models.Plano)
-        .filter(
-            models.Plano.id ==
-            assinatura.plano_id,
-            models.Plano.ativo == True
-        )
-        .first()
+    plano = buscar_plano_service(
+        db=db,
+        plano_id=assinatura.plano_id,
+        usuario_logado=usuario_logado,
+        exigir_ativo=True
     )
-
-    if not plano:
-        raise HTTPException(
-            status_code=404,
-            detail="Plano não encontrado ou inativo"
-        )
 
     agora = datetime.now()
 
     assinatura.data_ultimo_pagamento = agora
     assinatura.data_proximo_vencimento = (
         agora
-        + timedelta(days=plano.validade_dias)
+        + timedelta(
+            days=plano.validade_dias
+        )
     )
     assinatura.data_fim = (
         assinatura.data_proximo_vencimento
@@ -929,27 +1009,23 @@ def renovar_assinatura_service(
 def suspender_assinatura_service(
     db,
     assinatura_id: int,
-    dados
+    dados,
+    usuario_logado
 ):
-    assinatura = (
-        db.query(models.AssinaturaCliente)
-        .filter(
-            models.AssinaturaCliente.id ==
-            assinatura_id
+    assinatura = buscar_da_barbearia(
+        db=db,
+        model=models.AssinaturaCliente,
+        registro_id=assinatura_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado=(
+            "Assinatura não encontrada."
         )
-        .first()
     )
-
-    if not assinatura:
-        raise HTTPException(
-            status_code=404,
-            detail="Assinatura não encontrada"
-        )
 
     if assinatura.status == STATUS_SUSPENSO:
         raise HTTPException(
             status_code=400,
-            detail="Assinatura já está suspensa"
+            detail="Assinatura já está suspensa."
         )
 
     assinatura.status = STATUS_SUSPENSO
@@ -966,40 +1042,39 @@ def suspender_assinatura_service(
 def reativar_assinatura_service(
     db,
     assinatura_id: int,
-    dados
+    dados,
+    usuario_logado
 ):
-    assinatura = (
-        db.query(models.AssinaturaCliente)
-        .filter(
-            models.AssinaturaCliente.id ==
-            assinatura_id
+    assinatura = buscar_da_barbearia(
+        db=db,
+        model=models.AssinaturaCliente,
+        registro_id=assinatura_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado=(
+            "Assinatura não encontrada."
         )
-        .first()
     )
-
-    if not assinatura:
-        raise HTTPException(
-            status_code=404,
-            detail="Assinatura não encontrada"
-        )
 
     if dados.forma_pagamento:
         return renovar_assinatura_service(
             db=db,
-            assinatura_id=assinatura_id,
-            dados=dados
+            assinatura_id=assinatura.id,
+            dados=dados,
+            usuario_logado=usuario_logado
         )
 
     assinatura.status = STATUS_ATIVO
 
-    atualizar_status_assinatura(assinatura)
+    atualizar_status_assinatura(
+        assinatura
+    )
 
     if assinatura.status != STATUS_ATIVO:
         raise HTTPException(
             status_code=400,
             detail=(
                 "Não foi possível reativar a assinatura "
-                "sem regularizar o pagamento"
+                "sem regularizar o pagamento."
             )
         )
 
@@ -1013,9 +1088,16 @@ def reativar_assinatura_service(
 # INADIMPLÊNCIA
 # =========================
 
-def verificar_inadimplencia_service(db):
+def verificar_inadimplencia_service(
+    db,
+    usuario_logado
+):
     assinaturas = (
-        db.query(models.AssinaturaCliente)
+        consultar_da_barbearia(
+            db=db,
+            model=models.AssinaturaCliente,
+            usuario=usuario_logado
+        )
         .filter(
             models.AssinaturaCliente.status.in_([
                 STATUS_ATIVO,
@@ -1026,7 +1108,9 @@ def verificar_inadimplencia_service(db):
     )
 
     for assinatura in assinaturas:
-        atualizar_status_assinatura(assinatura)
+        atualizar_status_assinatura(
+            assinatura
+        )
 
     db.commit()
 

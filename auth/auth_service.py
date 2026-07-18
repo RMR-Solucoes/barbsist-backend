@@ -1,65 +1,106 @@
-from fastapi import HTTPException
+from fastapi import HTTPException, status
+from sqlalchemy.orm import Session
 
 import models
 
 from auth.security import (
-    criar_hash_senha,
     verificar_senha,
     criar_token_acesso
 )
 
 
-def criar_usuario_service(db, dados):
-    usuario_existente = db.query(models.Usuario).filter(
-        models.Usuario.email == dados.email
-    ).first()
 
-    if usuario_existente:
-        raise HTTPException(
-            status_code=400,
-            detail="E-mail já cadastrado"
-        )
 
-    novo_usuario = models.Usuario(
-        nome=dados.nome,
-        email=dados.email,
-        senha_hash=criar_hash_senha(dados.senha),
-        perfil=dados.perfil,
-        barbeiro_id=dados.barbeiro_id,
-        ativo=True
+def normalizar_email(email: str) -> str:
+    """
+    Padroniza o e-mail antes da consulta.
+
+    Evita diferenças causadas por letras maiúsculas
+    ou espaços digitados acidentalmente.
+    """
+
+    return email.strip().lower()
+
+
+def normalizar_slug(slug: str) -> str:
+    """
+    Padroniza o slug informado no login.
+    """
+
+    return slug.strip().lower()
+
+
+def login_service(
+    db: Session,
+    barbearia_slug: str,
+    email: str,
+    senha: str
+):
+    slug_normalizado = normalizar_slug(
+        barbearia_slug
     )
 
-    db.add(novo_usuario)
-    db.commit()
-    db.refresh(novo_usuario)
+    email_normalizado = normalizar_email(
+        email
+    )
 
-    return novo_usuario
+    barbearia = db.query(
+        models.Barbearia
+    ).filter(
+        models.Barbearia.slug == slug_normalizado
+    ).first()
 
+    if not barbearia:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Barbearia, usuário ou senha inválidos."
+        )
 
-def login_service(db, email: str, senha: str):
-    usuario = db.query(models.Usuario).filter(
-        models.Usuario.email == email,
-        models.Usuario.ativo == True
+    if not barbearia.ativa:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "O acesso desta barbearia está inativo. "
+                "Entre em contato com o suporte."
+            )
+        )
+
+    usuario = db.query(
+        models.Usuario
+    ).filter(
+        models.Usuario.barbearia_id == barbearia.id,
+        models.Usuario.email == email_normalizado,
+        models.Usuario.ativo.is_(True)
     ).first()
 
     if not usuario:
         raise HTTPException(
-            status_code=401,
-            detail="Usuário ou senha inválidos"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Barbearia, usuário ou senha inválidos."
         )
 
-    if not verificar_senha(senha, usuario.senha_hash):
+    if not verificar_senha(
+        senha,
+        usuario.senha_hash
+    ):
         raise HTTPException(
-            status_code=401,
-            detail="Usuário ou senha inválidos"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Barbearia, usuário ou senha inválidos."
         )
 
     token = criar_token_acesso({
         "sub": str(usuario.id),
         "email": usuario.email,
         "perfil": usuario.perfil,
+        "barbearia_id": usuario.barbearia_id,
+        "barbearia_slug": barbearia.slug,
         "barbeiro_id": usuario.barbeiro_id
     })
+
+    return {
+        "access_token": token,
+        "token_type": "bearer"
+    }
 
     return {
         "access_token": token,

@@ -54,10 +54,7 @@ from auth.permissions import (
 
 router = APIRouter(
     prefix="/planos",
-    tags=["Planos"],
-    dependencies=[
-        Depends(admin_gerente_ou_recepcao)
-    ]
+    tags=["Planos"]
 )
 
 
@@ -65,74 +62,123 @@ router = APIRouter(
 # PLANOS
 # =========================
 
-@router.post("", response_model=PlanoResponse)
+@router.post(
+    "",
+    response_model=PlanoResponse
+)
 def criar_plano(
     dados: PlanoCreate,
     db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_ou_recepcao
+    )
 ):
-    return criar_plano_service(db, dados)
+    return criar_plano_service(
+        db=db,
+        dados=dados,
+        usuario_logado=usuario_logado
+    )
 
 
-@router.get("", response_model=list[PlanoResponse])
+@router.get(
+    "",
+    response_model=list[PlanoResponse]
+)
 def listar_planos(
     db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_ou_recepcao
+    )
 ):
-    return listar_planos_service(db)
+    return listar_planos_service(
+        db=db,
+        usuario_logado=usuario_logado
+    )
 
 
-@router.put("/{plano_id}", response_model=PlanoResponse)
+@router.put(
+    "/{plano_id}",
+    response_model=PlanoResponse
+)
 def atualizar_plano(
     plano_id: int,
     dados: PlanoUpdate,
     db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_ou_gerente
+    )
 ):
     return atualizar_plano_service(
         db=db,
         plano_id=plano_id,
-        dados=dados
+        dados=dados,
+        usuario_logado=usuario_logado
     )
 
 
-@router.put("/{plano_id}/inativar", response_model=PlanoResponse)
+@router.put(
+    "/{plano_id}/inativar",
+    response_model=PlanoResponse
+)
 def inativar_plano(
     plano_id: int,
     db: Session = Depends(get_db),
-    usuario=Depends(admin_ou_gerente)
+    usuario_logado=Depends(
+        admin_ou_gerente
+    )
 ):
-    plano = buscar_plano_service(db, plano_id)
+    plano = buscar_plano_service(
+        db=db,
+        plano_id=plano_id,
+        usuario_logado=usuario_logado,
+        exigir_ativo=False
+    )
 
-    if not plano:
+    if not plano.ativo:
         raise HTTPException(
-            status_code=404,
-            detail="Plano não encontrado"
+            status_code=400,
+            detail="Plano já está inativo."
         )
 
     plano.ativo = False
+
     db.commit()
     db.refresh(plano)
 
     return plano
 
 
-@router.put("/{plano_id}/reativar", response_model=PlanoResponse)
+@router.put(
+    "/{plano_id}/reativar",
+    response_model=PlanoResponse
+)
 def reativar_plano(
     plano_id: int,
     db: Session = Depends(get_db),
-    usuario=Depends(admin_ou_gerente)
+    usuario_logado=Depends(
+        admin_ou_gerente
+    )
 ):
-    plano = buscar_plano_service(db, plano_id)
+    plano = buscar_plano_service(
+        db=db,
+        plano_id=plano_id,
+        usuario_logado=usuario_logado,
+        exigir_ativo=False
+    )
 
-    if not plano:
+    if plano.ativo:
         raise HTTPException(
-            status_code=404,
-            detail="Plano não encontrado"
+            status_code=400,
+            detail="Plano já está ativo."
         )
 
     plano.ativo = True
+
     db.commit()
     db.refresh(plano)
 
     return plano
+
 
 # =========================
 # ASSINATURAS
@@ -145,124 +191,54 @@ def reativar_plano(
 def criar_assinatura(
     dados: AssinaturaClienteCreate,
     db: Session = Depends(get_db),
-    
+    usuario_logado=Depends(
+        admin_gerente_ou_recepcao
+    )
 ):
-    return criar_assinatura_service(db, dados)
+    return criar_assinatura_service(
+        db=db,
+        dados=dados,
+        usuario_logado=usuario_logado
+    )
 
 
 @router.get(
     "/assinaturas",
-    response_model=list[AssinaturaClienteResponse]
+    response_model=list[
+        AssinaturaClienteResponse
+    ]
 )
 def listar_assinaturas(
     db: Session = Depends(get_db),
-   
+    usuario_logado=Depends(
+        admin_gerente_ou_recepcao
+    )
 ):
-    return listar_assinaturas_service(db)
+    return listar_assinaturas_service(
+        db=db,
+        usuario_logado=usuario_logado
+    )
 
 
 @router.get(
     "/cliente/{cliente_id}",
-    response_model=list[AssinaturaClienteResponse]
+    response_model=list[
+        AssinaturaClienteResponse
+    ]
 )
 def buscar_assinaturas_cliente(
     cliente_id: int,
     db: Session = Depends(get_db),
-    
+    usuario_logado=Depends(
+        admin_gerente_ou_recepcao
+    )
 ):
     return buscar_assinaturas_cliente_service(
-        db,
-        cliente_id
-    )
-
-# =========================
-# USAR PLANO
-# =========================
-
-@router.post(
-    "/usar",
-    response_model=UsoPlanoResponse
-)
-def usar_plano(
-    dados: UsarPlanoRequest,
-    db: Session = Depends(get_db),
-    
-):
-    return usar_plano_service(db, dados)
-
-
-@router.post(
-    "/pagamento",
-    response_model=AssinaturaClienteResponse
-)
-def registrar_pagamento_plano(
-    dados: RegistrarPagamentoPlanoRequest,
-    db: Session = Depends(get_db),
-    
-):
-    return registrar_pagamento_plano_service(
         db=db,
-        dados=dados
+        cliente_id=cliente_id,
+        usuario_logado=usuario_logado
     )
 
-
-@router.get(
-    "/pagamentos",
-    response_model=list[PagamentoPlanoResponse]
-)
-def listar_pagamentos_planos(
-    db: Session = Depends(get_db),
-    
-):
-    return listar_pagamentos_planos_service(db)
-
-
-@router.get(
-    "/assinaturas/{assinatura_id}/pagamentos",
-    response_model=list[PagamentoPlanoResponse]
-)
-def listar_pagamentos_assinatura(
-    assinatura_id: int,
-    db: Session = Depends(get_db),
-    
-):
-    return listar_pagamentos_assinatura_service(
-        db=db,
-        assinatura_id=assinatura_id
-    )
-
-
-@router.get(
-    "/cliente/{cliente_id}/pagamentos",
-    response_model=list[PagamentoPlanoResponse]
-)
-def listar_pagamentos_cliente(
-    cliente_id: int,
-    db: Session = Depends(get_db),
-    
-):
-    return listar_pagamentos_cliente_service(
-        db=db,
-        cliente_id=cliente_id
-    )
-
-
-@router.put(
-    "/assinaturas/verificar-inadimplencia",
-    response_model=list[AssinaturaClienteResponse]
-)
-def verificar_inadimplencia(
-    db: Session = Depends(get_db),
-    
-):
-    return verificar_inadimplencia_service(db)
-
-@router.get("/{plano_id}", response_model=PlanoResponse)
-def buscar_plano(
-    plano_id: int,
-    db: Session = Depends(get_db),
-):
-    return buscar_plano_service(db, plano_id)
 
 @router.put(
     "/assinaturas/{assinatura_id}",
@@ -272,12 +248,17 @@ def atualizar_assinatura(
     assinatura_id: int,
     dados: AssinaturaClienteUpdate,
     db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_ou_gerente
+    )
 ):
     return atualizar_assinatura_service(
         db=db,
         assinatura_id=assinatura_id,
-        dados=dados
+        dados=dados,
+        usuario_logado=usuario_logado
     )
+
 
 @router.put(
     "/assinaturas/{assinatura_id}/renovar",
@@ -287,12 +268,15 @@ def renovar_assinatura(
     assinatura_id: int,
     dados: RenovarAssinaturaRequest,
     db: Session = Depends(get_db),
-    
+    usuario_logado=Depends(
+        admin_gerente_ou_recepcao
+    )
 ):
     return renovar_assinatura_service(
         db=db,
         assinatura_id=assinatura_id,
-        dados=dados
+        dados=dados,
+        usuario_logado=usuario_logado
     )
 
 
@@ -304,14 +288,16 @@ def suspender_assinatura(
     assinatura_id: int,
     dados: SuspenderAssinaturaRequest,
     db: Session = Depends(get_db),
-    
+    usuario_logado=Depends(
+        admin_ou_gerente
+    )
 ):
     return suspender_assinatura_service(
         db=db,
         assinatura_id=assinatura_id,
-        dados=dados
+        dados=dados,
+        usuario_logado=usuario_logado
     )
-
 
 
 @router.put(
@@ -322,12 +308,161 @@ def reativar_assinatura(
     assinatura_id: int,
     dados: ReativarAssinaturaRequest,
     db: Session = Depends(get_db),
-    
+    usuario_logado=Depends(
+        admin_ou_gerente
+    )
 ):
     return reativar_assinatura_service(
         db=db,
         assinatura_id=assinatura_id,
-        dados=dados
+        dados=dados,
+        usuario_logado=usuario_logado
     )
 
 
+# =========================
+# USO DO PLANO
+# =========================
+
+@router.post(
+    "/usar",
+    response_model=UsoPlanoResponse
+)
+def usar_plano(
+    dados: UsarPlanoRequest,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_ou_recepcao
+    )
+):
+    return usar_plano_service(
+        db=db,
+        dados=dados,
+        usuario_logado=usuario_logado
+    )
+
+
+# =========================
+# PAGAMENTOS
+# =========================
+
+@router.post(
+    "/pagamento",
+    response_model=AssinaturaClienteResponse
+)
+def registrar_pagamento_plano(
+    dados: RegistrarPagamentoPlanoRequest,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_ou_recepcao
+    )
+):
+    return registrar_pagamento_plano_service(
+        db=db,
+        dados=dados,
+        usuario_logado=usuario_logado
+    )
+
+
+@router.get(
+    "/pagamentos",
+    response_model=list[
+        PagamentoPlanoResponse
+    ]
+)
+def listar_pagamentos_planos(
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_ou_recepcao
+    )
+):
+    return listar_pagamentos_planos_service(
+        db=db,
+        usuario_logado=usuario_logado
+    )
+
+
+@router.get(
+    "/assinaturas/{assinatura_id}/pagamentos",
+    response_model=list[
+        PagamentoPlanoResponse
+    ]
+)
+def listar_pagamentos_assinatura(
+    assinatura_id: int,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_ou_recepcao
+    )
+):
+    return listar_pagamentos_assinatura_service(
+        db=db,
+        assinatura_id=assinatura_id,
+        usuario_logado=usuario_logado
+    )
+
+
+@router.get(
+    "/cliente/{cliente_id}/pagamentos",
+    response_model=list[
+        PagamentoPlanoResponse
+    ]
+)
+def listar_pagamentos_cliente(
+    cliente_id: int,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_ou_recepcao
+    )
+):
+    return listar_pagamentos_cliente_service(
+        db=db,
+        cliente_id=cliente_id,
+        usuario_logado=usuario_logado
+    )
+
+
+# =========================
+# INADIMPLÊNCIA
+# =========================
+
+@router.put(
+    "/assinaturas/verificar-inadimplencia",
+    response_model=list[
+        AssinaturaClienteResponse
+    ]
+)
+def verificar_inadimplencia(
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_ou_gerente
+    )
+):
+    return verificar_inadimplencia_service(
+        db=db,
+        usuario_logado=usuario_logado
+    )
+
+
+# =========================
+# BUSCA DE PLANO POR ID
+# Manter esta rota após as rotas específicas.
+# =========================
+
+@router.get(
+    "/{plano_id}",
+    response_model=PlanoResponse
+)
+def buscar_plano(
+    plano_id: int,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_ou_recepcao
+    )
+):
+    return buscar_plano_service(
+        db=db,
+        plano_id=plano_id,
+        usuario_logado=usuario_logado,
+        exigir_ativo=True
+    )

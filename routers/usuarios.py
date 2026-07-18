@@ -20,13 +20,15 @@ from auth.usuario_service import (
     reativar_usuario_service
 )
 
-from auth.permissions import admin
+from auth.permissions import (
+    admin,
+    superadmin_ou_admin
+)
 
 
 router = APIRouter(
     prefix="/usuarios",
-    tags=["Usuários"],
-    dependencies=[Depends(admin)]
+    tags=["Usuários"]
 )
 
 
@@ -36,11 +38,13 @@ router = APIRouter(
 )
 def criar_usuario(
     dados: UsuarioCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(superadmin_ou_admin)
 ):
     return criar_usuario_service(
-        dados,
-        db
+        dados=dados,
+        db=db,
+        usuario_logado=usuario_logado
     )
 
 
@@ -49,9 +53,13 @@ def criar_usuario(
     response_model=list[UsuarioResponse]
 )
 def listar_usuarios(
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin)
 ):
-    return listar_usuarios_service(db)
+    return listar_usuarios_service(
+        db=db,
+        usuario_logado=usuario_logado
+    )
 
 
 @router.get(
@@ -60,11 +68,13 @@ def listar_usuarios(
 )
 def buscar_usuario(
     usuario_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin)
 ):
     return buscar_usuario_service(
-        usuario_id,
-        db
+        usuario_id=usuario_id,
+        db=db,
+        usuario_logado=usuario_logado
     )
 
 
@@ -75,12 +85,14 @@ def buscar_usuario(
 def atualizar_usuario(
     usuario_id: int,
     dados: UsuarioUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin)
 ):
     return atualizar_usuario_service(
-        usuario_id,
-        dados,
-        db
+        usuario_id=usuario_id,
+        dados=dados,
+        db=db,
+        usuario_logado=usuario_logado
     )
 
 
@@ -90,13 +102,15 @@ def atualizar_usuario(
 def alterar_senha(
     usuario_id: int,
     dados: AlterarSenhaUsuarioRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin)
 ):
     alterar_senha_service(
-    usuario_id,
-    dados.nova_senha,
-    db
-)
+        usuario_id=usuario_id,
+        nova_senha=dados.nova_senha,
+        db=db,
+        usuario_logado=usuario_logado
+    )
 
     return {
         "mensagem": "Senha alterada com sucesso."
@@ -108,16 +122,19 @@ def alterar_senha(
 )
 def inativar_usuario(
     usuario_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin)
 ):
     inativar_usuario_service(
-        usuario_id,
-        db
+        usuario_id=usuario_id,
+        db=db,
+        usuario_logado=usuario_logado
     )
 
     return {
         "mensagem": "Usuário inativado com sucesso."
     }
+
 
 @router.put(
     "/{usuario_id}/reativar",
@@ -125,9 +142,11 @@ def inativar_usuario(
 )
 def reativar_usuario(
     usuario_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin)
 ):
     return reativar_usuario_service(
-        usuario_id,
-        db
+        usuario_id=usuario_id,
+        db=db,
+        usuario_logado=usuario_logado
     )

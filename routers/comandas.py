@@ -1,5 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session, joinedload
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException
+)
+
+from sqlalchemy.orm import (
+    Session,
+    joinedload
+)
 
 import models
 
@@ -34,17 +42,17 @@ from auth.dependencies import (
     get_barbeiro_logado
 )
 
+from auth.tenant import (
+    buscar_da_barbearia,
+    consultar_da_barbearia,
+    obter_barbearia_id
+)
+
 
 router = APIRouter(
     prefix="/comandas",
-    tags=["Comandas"],
-    dependencies=[
-        Depends(
-            admin_gerente_recepcao_ou_barbeiro
-        )
-    ]
+    tags=["Comandas"]
 )
-
 
 @router.post(
     "",
@@ -52,38 +60,58 @@ router = APIRouter(
 )
 def abrir_comanda(
     comanda: ComandaCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_recepcao_ou_barbeiro
+    )
 ):
-    barbeiro = db.query(models.Barbeiro).filter(
-        models.Barbeiro.id ==
-        comanda.barbeiro_id,
-        models.Barbeiro.ativo == True
-    ).first()
+    barbearia_id = obter_barbearia_id(
+        usuario_logado
+    )
 
-    if not barbeiro:
+    barbeiro = buscar_da_barbearia(
+        db=db,
+        model=models.Barbeiro,
+        registro_id=comanda.barbeiro_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado=(
+            "Barbeiro não encontrado ou inativo."
+        )
+    )
+
+    if not barbeiro.ativo:
         raise HTTPException(
             status_code=404,
-            detail="Barbeiro não encontrado ou inativo"
+            detail="Barbeiro não encontrado ou inativo."
         )
 
-    if comanda.cliente_id is not None:
-        cliente = db.query(models.Cliente).filter(
-            models.Cliente.id ==
-            comanda.cliente_id,
-            models.Cliente.ativo == True
-        ).first()
+    cliente_id = None
 
-        if not cliente:
+    if comanda.cliente_id is not None:
+        cliente = buscar_da_barbearia(
+            db=db,
+            model=models.Cliente,
+            registro_id=comanda.cliente_id,
+            usuario=usuario_logado,
+            mensagem_nao_encontrado=(
+                "Cliente não encontrado ou inativo."
+            )
+        )
+
+        if not cliente.ativo:
             raise HTTPException(
                 status_code=404,
-                detail="Cliente não encontrado ou inativo"
+                detail="Cliente não encontrado ou inativo."
             )
 
+        cliente_id = cliente.id
+
     nova_comanda = models.Comanda(
-        cliente_id=comanda.cliente_id,
-        barbeiro_id=comanda.barbeiro_id,
+        cliente_id=cliente_id,
+        barbeiro_id=barbeiro.id,
         status="aberta",
-        total=0
+        total=0,
+        barbearia_id=barbearia_id
     )
 
     db.add(nova_comanda)
@@ -98,16 +126,25 @@ def abrir_comanda(
     response_model=list[ComandaResponse]
 )
 def listar_comandas(
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_recepcao_ou_barbeiro
+    )
 ):
     return (
-        db.query(models.Comanda)
+        consultar_da_barbearia(
+            db=db,
+            model=models.Comanda,
+            usuario=usuario_logado
+        )
         .options(
             joinedload(models.Comanda.cliente),
             joinedload(models.Comanda.barbeiro),
             joinedload(models.Comanda.itens)
         )
-        .order_by(models.Comanda.id.desc())
+        .order_by(
+            models.Comanda.id.desc()
+        )
         .all()
     )
 
@@ -120,20 +157,29 @@ def minhas_comandas(
     barbeiro_id: int = Depends(
         get_barbeiro_logado
     ),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_recepcao_ou_barbeiro
+    )
 ):
     return (
-        db.query(models.Comanda)
+        consultar_da_barbearia(
+            db=db,
+            model=models.Comanda,
+            usuario=usuario_logado
+        )
         .options(
             joinedload(models.Comanda.cliente),
             joinedload(models.Comanda.barbeiro),
             joinedload(models.Comanda.itens)
         )
         .filter(
-            models.Comanda.barbeiro_id ==
-            barbeiro_id
+            models.Comanda.barbeiro_id
+            == barbeiro_id
         )
-        .order_by(models.Comanda.id.desc())
+        .order_by(
+            models.Comanda.id.desc()
+        )
         .all()
     )
 
@@ -144,10 +190,17 @@ def minhas_comandas(
 )
 def buscar_comanda(
     comanda_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_recepcao_ou_barbeiro
+    )
 ):
     comanda = (
-        db.query(models.Comanda)
+        consultar_da_barbearia(
+            db=db,
+            model=models.Comanda,
+            usuario=usuario_logado
+        )
         .options(
             joinedload(models.Comanda.cliente),
             joinedload(models.Comanda.barbeiro),
@@ -162,7 +215,7 @@ def buscar_comanda(
     if not comanda:
         raise HTTPException(
             status_code=404,
-            detail="Comanda não encontrada"
+            detail="Comanda não encontrada."
         )
 
     return comanda
@@ -173,11 +226,15 @@ def buscar_comanda(
 )
 def consultar_assinatura_da_comanda(
     comanda_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_recepcao_ou_barbeiro
+    )
 ):
     return obter_assinatura_disponivel_comanda_service(
         db=db,
-        comanda_id=comanda_id
+        comanda_id=comanda_id,
+        usuario_logado=usuario_logado
     )
 
 
@@ -188,45 +245,60 @@ def consultar_assinatura_da_comanda(
 def adicionar_servico_na_comanda(
     comanda_id: int,
     item: AdicionarServicoComanda,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_recepcao_ou_barbeiro
+    )
 ):
     if item.quantidade <= 0:
         raise HTTPException(
             status_code=400,
             detail=(
                 "A quantidade do serviço deve ser "
-                "maior que zero"
+                "maior que zero."
             )
         )
 
-    comanda = db.query(models.Comanda).filter(
-        models.Comanda.id == comanda_id,
-        models.Comanda.status == "aberta"
-    ).first()
+    comanda = buscar_da_barbearia(
+        db=db,
+        model=models.Comanda,
+        registro_id=comanda_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado=(
+            "Comanda não encontrada ou já fechada."
+        )
+    )
 
-    if not comanda:
+    if comanda.status != "aberta":
         raise HTTPException(
             status_code=404,
             detail=(
-                "Comanda não encontrada ou já fechada"
+                "Comanda não encontrada ou já fechada."
             )
         )
 
-    servico = db.query(models.Servico).filter(
-        models.Servico.id == item.servico_id,
-        models.Servico.ativo == True
-    ).first()
+    servico = buscar_da_barbearia(
+        db=db,
+        model=models.Servico,
+        registro_id=item.servico_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado=(
+            "Serviço não encontrado ou inativo."
+        )
+    )
 
-    if not servico:
+    if not servico.ativo:
         raise HTTPException(
             status_code=404,
-            detail="Serviço não encontrado ou inativo"
+            detail="Serviço não encontrado ou inativo."
         )
 
-    subtotal = servico.preco * item.quantidade
+    subtotal = (
+        servico.preco * item.quantidade
+    )
 
     novo_item = models.ItemComanda(
-        comanda_id=comanda_id,
+        comanda_id=comanda.id,
         tipo="servico",
         descricao=servico.nome,
         quantidade=item.quantidade,
@@ -255,39 +327,52 @@ def adicionar_servico_na_comanda(
 def adicionar_produto_na_comanda(
     comanda_id: int,
     item: AdicionarProdutoComanda,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_recepcao_ou_barbeiro
+    )
 ):
     if item.quantidade <= 0:
         raise HTTPException(
             status_code=400,
             detail=(
                 "A quantidade do produto deve ser "
-                "maior que zero"
+                "maior que zero."
             )
         )
 
-    comanda = db.query(models.Comanda).filter(
-        models.Comanda.id == comanda_id,
-        models.Comanda.status == "aberta"
-    ).first()
+    comanda = buscar_da_barbearia(
+        db=db,
+        model=models.Comanda,
+        registro_id=comanda_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado=(
+            "Comanda não encontrada ou já fechada."
+        )
+    )
 
-    if not comanda:
+    if comanda.status != "aberta":
         raise HTTPException(
             status_code=404,
             detail=(
-                "Comanda não encontrada ou já fechada"
+                "Comanda não encontrada ou já fechada."
             )
         )
 
-    produto = db.query(models.Produto).filter(
-        models.Produto.id == item.produto_id,
-        models.Produto.ativo == True
-    ).first()
+    produto = buscar_da_barbearia(
+        db=db,
+        model=models.Produto,
+        registro_id=item.produto_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado=(
+            "Produto não encontrado ou inativo."
+        )
+    )
 
-    if not produto:
+    if not produto.ativo:
         raise HTTPException(
             status_code=404,
-            detail="Produto não encontrado ou inativo"
+            detail="Produto não encontrado ou inativo."
         )
 
     validar_estoque(
@@ -296,11 +381,12 @@ def adicionar_produto_na_comanda(
     )
 
     subtotal = (
-        produto.preco_venda * item.quantidade
+        produto.preco_venda
+        * item.quantidade
     )
 
     novo_item = models.ItemComanda(
-        comanda_id=comanda_id,
+        comanda_id=comanda.id,
         tipo="produto",
         descricao=produto.nome,
         quantidade=item.quantidade,
@@ -333,25 +419,30 @@ def adicionar_produto_na_comanda(
 )
 def listar_itens_da_comanda(
     comanda_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_recepcao_ou_barbeiro
+    )
 ):
-    comanda = db.query(models.Comanda).filter(
-        models.Comanda.id == comanda_id
-    ).first()
-
-    if not comanda:
-        raise HTTPException(
-            status_code=404,
-            detail="Comanda não encontrada"
+    comanda = buscar_da_barbearia(
+        db=db,
+        model=models.Comanda,
+        registro_id=comanda_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado=(
+            "Comanda não encontrada."
         )
+    )
 
     return (
         db.query(models.ItemComanda)
         .filter(
-            models.ItemComanda.comanda_id ==
-            comanda_id
+            models.ItemComanda.comanda_id
+            == comanda.id
         )
-        .order_by(models.ItemComanda.id.asc())
+        .order_by(
+            models.ItemComanda.id.asc()
+        )
         .all()
     )
 
@@ -363,13 +454,17 @@ def usar_plano_no_item(
     comanda_id: int,
     item_id: int,
     dados: UsarPlanoItemComandaRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_recepcao_ou_barbeiro
+    )
 ):
     return usar_plano_em_item_comanda_service(
         db=db,
         comanda_id=comanda_id,
         item_id=item_id,
-        assinatura_id=dados.assinatura_id
+        assinatura_id=dados.assinatura_id,
+        usuario_logado=usuario_logado
     )
 
 
@@ -379,11 +474,14 @@ def usar_plano_no_item(
 def fechar_comanda(
     comanda_id: int,
     dados: FecharComanda,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_recepcao_ou_barbeiro
+    )
 ):
     return fechar_comanda_service(
         db=db,
         comanda_id=comanda_id,
-        forma_pagamento=dados.forma_pagamento
+        forma_pagamento=dados.forma_pagamento,
+        usuario_logado=usuario_logado
     )
-

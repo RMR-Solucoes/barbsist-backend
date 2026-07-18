@@ -1,13 +1,33 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import (
+    APIRouter,
+    Depends
+)
+
 from sqlalchemy.orm import Session
 
 from database import get_db
-import models
+
 from schemas import (
     BarbeariaCreate,
     BarbeariaUpdate,
     BarbeariaResponse
 )
+
+from services.barbearia_service import (
+    criar_barbearia_service,
+    listar_barbearias_service,
+    buscar_barbearia_por_id_service,
+    obter_minha_barbearia_service,
+    atualizar_minha_barbearia_service,
+    alterar_status_barbearia_service
+)
+
+from auth.permissions import (
+    superadmin,
+    admin_ou_gerente,
+    todos_logados
+)
+
 
 router = APIRouter(
     prefix="/barbearia",
@@ -15,79 +35,128 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=BarbeariaResponse)
-def obter_barbearia(
-    db: Session = Depends(get_db)
-):
-    barbearia = db.query(
-        models.Barbearia
-    ).first()
+# =========================
+# ADMINISTRAÇÃO DA PLATAFORMA
+# =========================
 
-    if not barbearia:
-        raise HTTPException(
-            status_code=404,
-            detail="Barbearia não cadastrada."
-        )
-
-    return barbearia
-
-
-@router.post("", response_model=BarbeariaResponse)
+@router.post(
+    "",
+    response_model=BarbeariaResponse
+)
 def criar_barbearia(
     dados: BarbeariaCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        superadmin
+    )
 ):
-    existente = db.query(
-        models.Barbearia
-    ).first()
-
-    if existente:
-        raise HTTPException(
-            status_code=400,
-            detail="A barbearia já foi cadastrada."
-        )
-
-    barbearia = models.Barbearia(
-        nome=dados.nome,
-        telefone_whatsapp=dados.telefone_whatsapp,
-        endereco=dados.endereco,
-        instagram=dados.instagram,
-        logo_url=dados.logo_url,
-        slogan=dados.slogan,
-        imagem_capa_url=dados.imagem_capa_url,
+    return criar_barbearia_service(
+        db=db,
+        dados=dados
     )
 
-    db.add(barbearia)
-    db.commit()
-    db.refresh(barbearia)
 
-    return barbearia
-
-
-@router.put("", response_model=BarbeariaResponse)
-def atualizar_barbearia(
-    dados: BarbeariaUpdate,
-    db: Session = Depends(get_db)
+@router.get(
+    "/todas",
+    response_model=list[BarbeariaResponse]
+)
+def listar_barbearias(
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        superadmin
+    )
 ):
-    barbearia = db.query(
-        models.Barbearia
-    ).first()
+    return listar_barbearias_service(
+        db=db
+    )
 
-    if not barbearia:
-        raise HTTPException(
-            status_code=404,
-            detail="Barbearia não encontrada."
-        )
 
-    barbearia.nome = dados.nome
-    barbearia.telefone_whatsapp = dados.telefone_whatsapp
-    barbearia.endereco = dados.endereco
-    barbearia.instagram = dados.instagram
-    barbearia.logo_url = dados.logo_url
-    barbearia.slogan = dados.slogan
-    barbearia.imagem_capa_url = dados.imagem_capa_url
+@router.get(
+    "/administracao/{barbearia_id}",
+    response_model=BarbeariaResponse
+)
+def buscar_barbearia_por_id(
+    barbearia_id: int,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        superadmin
+    )
+):
+    return buscar_barbearia_por_id_service(
+        db=db,
+        barbearia_id=barbearia_id
+    )
 
-    db.commit()
-    db.refresh(barbearia)
 
-    return barbearia
+@router.put(
+    "/administracao/{barbearia_id}/ativar",
+    response_model=BarbeariaResponse
+)
+def ativar_barbearia(
+    barbearia_id: int,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        superadmin
+    )
+):
+    return alterar_status_barbearia_service(
+        db=db,
+        barbearia_id=barbearia_id,
+        ativa=True
+    )
+
+
+@router.put(
+    "/administracao/{barbearia_id}/desativar",
+    response_model=BarbeariaResponse
+)
+def desativar_barbearia(
+    barbearia_id: int,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        superadmin
+    )
+):
+    return alterar_status_barbearia_service(
+        db=db,
+        barbearia_id=barbearia_id,
+        ativa=False
+    )
+
+
+# =========================
+# BARBEARIA DO USUÁRIO
+# =========================
+
+@router.get(
+    "/minha",
+    response_model=BarbeariaResponse
+)
+def obter_minha_barbearia(
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        todos_logados
+    )
+):
+    return obter_minha_barbearia_service(
+        db=db,
+        usuario_logado=usuario_logado
+    )
+
+
+@router.put(
+    "/minha",
+    response_model=BarbeariaResponse
+)
+def atualizar_minha_barbearia(
+    dados: BarbeariaUpdate,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_ou_gerente
+    )
+):
+    return atualizar_minha_barbearia_service(
+        db=db,
+        dados=dados,
+        usuario_logado=usuario_logado
+    )

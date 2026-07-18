@@ -1,18 +1,15 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from fastapi.security import OAuth2PasswordRequestForm
 
 from database import get_db
 
 from schemas import (
-    UsuarioResponse,
-    TokenResponse
+    LoginRequest,
+    TokenResponse,
+    UsuarioResponse
 )
 
-from auth.auth_service import (
-    login_service
-)
-
+from auth.auth_service import login_service
 from auth.dependencies import get_usuario_logado
 
 
@@ -22,20 +19,26 @@ router = APIRouter(
 )
 
 
-
-@router.post("/login", response_model=TokenResponse)
+@router.post(
+    "/login",
+    response_model=TokenResponse
+)
 def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
+    dados: LoginRequest,
     db: Session = Depends(get_db)
 ):
     return login_service(
         db=db,
-        email=form_data.username,
-        senha=form_data.password
+        barbearia_slug=dados.barbearia_slug,
+        email=dados.email,
+        senha=dados.senha
     )
 
 
-@router.get("/me", response_model=UsuarioResponse)
+@router.get(
+    "/me",
+    response_model=UsuarioResponse
+)
 def usuario_logado(
     usuario=Depends(get_usuario_logado)
 ):

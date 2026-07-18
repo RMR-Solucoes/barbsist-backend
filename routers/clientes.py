@@ -1,16 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from database import get_db
-import models
 
 from schemas import (
     ClienteCreate,
+    ClienteUpdate,
     ClienteResponse,
     ClienteComAssinaturaResponse
 )
 
 from auth.permissions import (
+    admin_gerente_ou_recepcao,
     admin_gerente_recepcao_ou_barbeiro
 )
 
@@ -19,45 +20,64 @@ from auth.dependencies import (
 )
 
 from services.cliente_service import (
-    listar_clientes_com_assinaturas_service
+    criar_cliente_service,
+    listar_clientes_service,
+    buscar_cliente_service,
+    atualizar_cliente_service,
+    inativar_cliente_service,
+    reativar_cliente_service,
+    listar_clientes_com_assinaturas_service,
+    listar_clientes_do_barbeiro_service
 )
+
 
 router = APIRouter(
     prefix="/clientes",
-    tags=["Clientes"],
-    dependencies=[
-        Depends(admin_gerente_recepcao_ou_barbeiro)
-    ]
+    tags=["Clientes"]
 )
 
 
-@router.post("", response_model=ClienteResponse)
+@router.post(
+    "",
+    response_model=ClienteResponse
+)
 def criar_cliente(
-    cliente: ClienteCreate,
-    db: Session = Depends(get_db)
+    dados: ClienteCreate,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_ou_recepcao
+    )
 ):
-    novo_cliente = models.Cliente(
-        nome=cliente.nome,
-        telefone=cliente.telefone,
-        email=cliente.email,
-        observacoes=cliente.observacoes
+    """
+    Cria um cliente na barbearia do usuário autenticado.
+    """
+
+    return criar_cliente_service(
+        dados=dados,
+        db=db,
+        usuario_logado=usuario_logado
     )
 
-    db.add(novo_cliente)
-    db.commit()
-    db.refresh(novo_cliente)
 
-    return novo_cliente
-
-
-@router.get("", response_model=list[ClienteResponse])
+@router.get(
+    "",
+    response_model=list[ClienteResponse]
+)
 def listar_clientes(
     db: Session = Depends(get_db),
-    usuario=Depends(admin_gerente_recepcao_ou_barbeiro)
+    usuario_logado=Depends(
+        admin_gerente_recepcao_ou_barbeiro
+    )
 ):
-    return db.query(models.Cliente).filter(
-        models.Cliente.ativo == True
-    ).all()
+    """
+    Lista os clientes ativos da barbearia atual.
+    """
+
+    return listar_clientes_service(
+        db=db,
+        usuario_logado=usuario_logado,
+        apenas_ativos=True
+    )
 
 
 @router.get(
@@ -67,98 +87,131 @@ def listar_clientes(
     ]
 )
 def listar_clientes_com_assinaturas(
-    db: Session = Depends(get_db)
-):
-    return listar_clientes_com_assinaturas_service(
-        db=db
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_recepcao_ou_barbeiro
     )
+):
+    """
+    Lista os clientes ativos com dados de assinatura,
+    limitados à barbearia atual.
+    """
+
+    return listar_clientes_com_assinaturas_service(
+        db=db,
+        usuario_logado=usuario_logado
+    )
+
 
 @router.get(
     "/meus",
     response_model=list[ClienteResponse]
 )
 def meus_clientes(
-    barbeiro_id: int = Depends(get_barbeiro_logado),
-    db: Session = Depends(get_db)
+    barbeiro_id: int = Depends(
+        get_barbeiro_logado
+    ),
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_recepcao_ou_barbeiro
+    )
 ):
-    clientes = (
-        db.query(models.Cliente)
-        .join(models.Comanda, models.Comanda.cliente_id == models.Cliente.id)
-        .filter(
-            models.Comanda.barbeiro_id == barbeiro_id,
-            models.Cliente.ativo == True
-        )
-        .distinct()
-        .all()
+    """
+    Lista os clientes já atendidos pelo barbeiro logado.
+    """
+
+    return listar_clientes_do_barbeiro_service(
+        barbeiro_id=barbeiro_id,
+        db=db,
+        usuario_logado=usuario_logado
     )
 
-    return clientes
 
-
-@router.get("/{cliente_id}", response_model=ClienteResponse)
+@router.get(
+    "/{cliente_id}",
+    response_model=ClienteResponse
+)
 def buscar_cliente(
     cliente_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_recepcao_ou_barbeiro
+    )
 ):
-    cliente = db.query(models.Cliente).filter(
-        models.Cliente.id == cliente_id,
-        models.Cliente.ativo == True
-    ).first()
+    """
+    Busca um cliente ativo da barbearia atual.
+    """
 
-    if not cliente:
-        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    return buscar_cliente_service(
+        cliente_id=cliente_id,
+        db=db,
+        usuario_logado=usuario_logado,
+        exigir_ativo=True
+    )
 
-    return cliente
 
-
-@router.put("/{cliente_id}", response_model=ClienteResponse)
+@router.put(
+    "/{cliente_id}",
+    response_model=ClienteResponse
+)
 def atualizar_cliente(
     cliente_id: int,
-    cliente: ClienteCreate,
-    db: Session = Depends(get_db)
+    dados: ClienteUpdate,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_ou_recepcao
+    )
 ):
-    cliente_db = db.query(models.Cliente).filter(
-        models.Cliente.id == cliente_id,
-        models.Cliente.ativo == True
-    ).first()
-
-    if not cliente_db:
-        raise HTTPException(
-            status_code=404,
-            detail="Cliente não encontrado"
-        )
-
-    cliente_db.nome = cliente.nome
-    cliente_db.telefone = cliente.telefone
-    cliente_db.email = cliente.email
-    cliente_db.observacoes = cliente.observacoes
-
-    db.commit()
-    db.refresh(cliente_db)
-
-    return cliente_db
+    return atualizar_cliente_service(
+        cliente_id=cliente_id,
+        dados=dados,
+        db=db,
+        usuario_logado=usuario_logado
+    )
 
 
-@router.delete("/{cliente_id}")
-def deletar_cliente(
+@router.delete(
+    "/{cliente_id}"
+)
+def inativar_cliente(
     cliente_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_ou_recepcao
+    )
 ):
-    cliente = db.query(models.Cliente).filter(
-        models.Cliente.id == cliente_id,
-        models.Cliente.ativo == True
-    ).first()
+    """
+    Inativa um cliente sem excluir seus dados.
+    """
 
-    if not cliente:
-        raise HTTPException(
-            status_code=404,
-            detail="Cliente não encontrado"
-        )
-
-    cliente.ativo = False
-
-    db.commit()
+    inativar_cliente_service(
+        cliente_id=cliente_id,
+        db=db,
+        usuario_logado=usuario_logado
+    )
 
     return {
-        "mensagem": "Cliente deletado com sucesso"
+        "mensagem": "Cliente inativado com sucesso."
     }
+
+
+@router.put(
+    "/{cliente_id}/reativar",
+    response_model=ClienteResponse
+)
+def reativar_cliente(
+    cliente_id: int,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_gerente_ou_recepcao
+    )
+):
+    """
+    Reativa um cliente da barbearia atual.
+    """
+
+    return reativar_cliente_service(
+        cliente_id=cliente_id,
+        db=db,
+        usuario_logado=usuario_logado
+    )

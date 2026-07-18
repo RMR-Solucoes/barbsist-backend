@@ -1,52 +1,22 @@
-from fastapi import Depends, HTTPException
-from fastapi.security import OAuth2PasswordBearer
-from jose import jwt, JWTError
-from sqlalchemy.orm import Session
+from fastapi import Depends, HTTPException, status
 
-import models
-from database import get_db
-from auth.security import SECRET_KEY, ALGORITHM
-
-
-oauth2_scheme = OAuth2PasswordBearer(
-    tokenUrl="/auth/login"
-)
+from auth.security import obter_usuario_logado
 
 
 def get_usuario_logado(
-    token: str = Depends(oauth2_scheme),
-    db: Session = Depends(get_db)
+    usuario=Depends(obter_usuario_logado)
 ):
-    try:
-        payload = jwt.decode(
-            token,
-            SECRET_KEY,
-            algorithms=[ALGORITHM]
-        )
+    """
+    Mantém compatibilidade com os routers que ainda importam
+    get_usuario_logado de auth.dependencies.
 
-        usuario_id = payload.get("sub")
+    A validação real do token fica centralizada em auth.security.
+    """
 
-        if usuario_id is None:
-            raise HTTPException(
-                status_code=401,
-                detail="Token inválido"
-            )
-
-    except JWTError:
+    if usuario is None:
         raise HTTPException(
-            status_code=401,
-            detail="Token inválido ou expirado"
-        )
-
-    usuario = db.query(models.Usuario).filter(
-        models.Usuario.id == int(usuario_id),
-        models.Usuario.ativo == True
-    ).first()
-
-    if not usuario:
-        raise HTTPException(
-            status_code=401,
-            detail="Usuário não encontrado ou inativo"
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Usuário não autenticado."
         )
 
     return usuario
@@ -55,16 +25,24 @@ def get_usuario_logado(
 def get_barbeiro_logado(
     usuario=Depends(get_usuario_logado)
 ):
+    """
+    Retorna o barbeiro_id do usuário autenticado quando ele possui
+    perfil de barbeiro e está corretamente vinculado.
+    """
+
     if usuario.perfil != "barbeiro":
         raise HTTPException(
-            status_code=403,
-            detail="Acesso permitido apenas para barbeiros"
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Acesso permitido apenas para barbeiros."
         )
 
     if usuario.barbeiro_id is None:
         raise HTTPException(
-            status_code=403,
-            detail="Usuário barbeiro não está vinculado a um barbeiro"
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Usuário barbeiro não está vinculado "
+                "a um barbeiro."
+            )
         )
 
     return usuario.barbeiro_id

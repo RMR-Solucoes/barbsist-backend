@@ -3,28 +3,84 @@ from typing import Optional
 from datetime import datetime, date
 
 
+# =========================
+# BARBEARIA
+# =========================
 
 class BarbeariaBase(BaseModel):
+    # Dados cadastrais
     nome: str
+    responsavel: str | None = None
+    email: str | None = None
+    telefone: str | None = None
     telefone_whatsapp: str | None = None
+    cnpj: str | None = None
+
+    # Endereço
     endereco: str | None = None
+    cidade: str | None = None
+    estado: str | None = None
+    cep: str | None = None
+
+    # Identidade visual
     instagram: str | None = None
     logo_url: str | None = None
     slogan: str | None = None
     imagem_capa_url: str | None = None
 
+    # Tema visual
+    cor_primaria: str = "#111827"
+    cor_secundaria: str = "#2563EB"
+    cor_fundo: str = "#F3F4F6"
+    cor_sidebar: str = "#111827"
+    cor_texto_sidebar: str = "#FFFFFF"
+    cor_destaque: str = "#2563EB"
+
 
 class BarbeariaCreate(BarbeariaBase):
+    """
+    O código e o slug serão gerados pelo backend.
+
+    O frontend não deverá controlar esses identificadores.
+    """
+
     pass
 
 
-class BarbeariaUpdate(BarbeariaBase):
-    ativa: bool | None = True
+class BarbeariaUpdate(BaseModel):
+    nome: str | None = None
+    responsavel: str | None = None
+    email: str | None = None
+    telefone: str | None = None
+    telefone_whatsapp: str | None = None
+    cnpj: str | None = None
+
+    endereco: str | None = None
+    cidade: str | None = None
+    estado: str | None = None
+    cep: str | None = None
+
+    instagram: str | None = None
+    logo_url: str | None = None
+    slogan: str | None = None
+    imagem_capa_url: str | None = None
+
+    cor_primaria: str | None = None
+    cor_secundaria: str | None = None
+    cor_fundo: str | None = None
+    cor_sidebar: str | None = None
+    cor_texto_sidebar: str | None = None
+    cor_destaque: str | None = None
+
+    ativa: bool | None = None
 
 
 class BarbeariaResponse(BarbeariaBase):
     id: int
+    codigo: int
+    slug: str
     ativa: bool
+    created_at: datetime | None = None
 
     class Config:
         from_attributes = True
@@ -44,15 +100,26 @@ class ClienteCreate(ClienteBase):
     pass
 
 
+class ClienteUpdate(BaseModel):
+    nome: Optional[str] = None
+    telefone: Optional[str] = None
+    email: Optional[str] = None
+    observacoes: Optional[str] = None
+
+
 class ClienteResponse(ClienteBase):
     id: int
+    numero_sequencial: int
+    codigo: str
     ativo: bool
 
     class Config:
         from_attributes = True
 
 
-class ClienteComAssinaturaResponse(ClienteResponse):
+class ClienteComAssinaturaResponse(
+    ClienteResponse
+):
     possui_assinatura: bool = False
 
     assinatura_id: Optional[int] = None
@@ -62,10 +129,15 @@ class ClienteComAssinaturaResponse(ClienteResponse):
     plano_id: Optional[int] = None
     plano_nome: Optional[str] = None
 
-    data_proximo_vencimento: Optional[datetime] = None
+    data_proximo_vencimento: Optional[
+        datetime
+    ] = None
 
     usos_disponiveis: Optional[int] = None
-    quantidade_servicos_plano: Optional[int] = None
+
+    quantidade_servicos_plano: Optional[
+        int
+    ] = None
 
     class Config:
         from_attributes = True
@@ -90,11 +162,13 @@ class BarbeiroCreate(BarbeiroBase):
 
 class BarbeiroResponse(BarbeiroBase):
     id: int
+    numero_sequencial: int
+    codigo: str
+    barbearia_id: int
     ativo: bool
 
     class Config:
         from_attributes = True
-
 
 # =========================
 # SERVIÇOS
@@ -112,6 +186,9 @@ class ServicoCreate(ServicoBase):
 
 class ServicoResponse(ServicoBase):
     id: int
+    numero_sequencial: int
+    codigo: str
+    barbearia_id: int
     ativo: bool
 
     class Config:
@@ -136,6 +213,9 @@ class ProdutoCreate(ProdutoBase):
 
 class ProdutoResponse(ProdutoBase):
     id: int
+    numero_sequencial: int
+    codigo: str
+    barbearia_id: int
     ativo: bool
 
     class Config:
@@ -262,26 +342,39 @@ class ComissaoResponse(BaseModel):
 # USUÁRIOS / AUTENTICAÇÃO
 # =========================
 
+PERFIS_USUARIO_VALIDOS = {
+    "admin",
+    "gerente",
+    "recepcao",
+    "barbeiro"
+}
+
+
 class UsuarioCreate(BaseModel):
     nome: str
     email: str
     senha: str
-    perfil: Optional[str] = "admin"
-    barbeiro_id: Optional[int] = None
-
-
+    perfil: str = "admin"
+    barbearia_id: int | None = None
+    barbeiro_id: int | None = None
 
 class UsuarioResponse(BaseModel):
     id: int
     nome: str
     email: str
     perfil: str
-    barbeiro_id: Optional[int] = None
+
+    barbearia_id: int
+    barbeiro_id: int | None = None
+
     ativo: bool
 
     class Config:
         from_attributes = True
+
+
 class LoginRequest(BaseModel):
+    barbearia_slug: str
     email: str
     senha: str
 
@@ -290,14 +383,15 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
 
+
 # =========================
 # ESTILOS DE CORTE / BARBA
 # =========================
 
 class EstiloBase(BaseModel):
     nome: str
-    categoria: str  # corte, barba, sobrancelha, combo
-    tipo_cabelo: Optional[str] = "geral"  # geral, afro, liso, cacheado, ondulado
+    categoria: str
+    tipo_cabelo: Optional[str] = "geral"
     descricao: Optional[str] = None
     imagem_url: Optional[str] = None
 
@@ -311,8 +405,7 @@ class EstiloResponse(EstiloBase):
     ativo: bool
 
     class Config:
-        from_attributes = True    
-
+        from_attributes = True
 
 # =========================
 # AGENDAMENTOS
@@ -612,7 +705,7 @@ class UsuarioUpdate(BaseModel):
     nome: str
     email: str
     perfil: str
-    barbeiro_id: Optional[int] = None
+    barbeiro_id: int | None = None
     ativo: bool = True
 
 

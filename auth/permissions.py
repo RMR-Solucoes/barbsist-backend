@@ -27,6 +27,18 @@ def permitir_perfis(perfis_permitidos: list[str]):
 
 
 # =========================
+# ADMINISTRAÇÃO DA PLATAFORMA
+# =========================
+
+superadmin = permitir_perfis([
+    "superadmin"
+])
+
+superadmin_ou_admin = permitir_perfis([
+    "superadmin",
+    "admin"
+])
+# =========================
 # PERMISSÕES BASE
 # =========================
 
