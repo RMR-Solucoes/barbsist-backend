@@ -1,20 +1,28 @@
 from datetime import date, datetime, timedelta
 import re
+from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import get_db
 import models
 from schemas import AgendamentoCreate, AgendamentoResponse
-
 from services.agendamento_service import criar_agendamento_service
+from services.barbeiro_disponibilidade_service import (
+    buscar_disponibilidade_publica,
+)
+from services.configuracao_funcionamento_service import (
+    buscar_configuracao_publica_por_dia,
+)
+from services.sequencia_service import gerar_codigo_comercial
 
 
 router = APIRouter(
     prefix="/agendamento-online",
-    tags=["Agendamento Online"]
+    tags=["Agendamento Online"],
 )
 
 
@@ -28,94 +36,194 @@ class AgendamentoOnlineCreate(BaseModel):
     observacoes: str | None = None
 
 
-@router.get("/barbeiros")
-def listar_barbeiros_online(db: Session = Depends(get_db)):
-    return db.query(models.Barbeiro).filter(
-        models.Barbeiro.ativo == True
-    ).order_by(models.Barbeiro.nome.asc()).all()
+def obter_barbearia_publica(
+    db: Session,
+    barbearia_slug: str,
+) -> models.Barbearia:
+    barbearia = (
+        db.query(models.Barbearia)
+        .filter(
+            models.Barbearia.slug == barbearia_slug.strip().lower(),
+            models.Barbearia.ativa.is_(True),
+        )
+        .first()
+    )
+
+    if not barbearia:
+        raise HTTPException(
+            status_code=404,
+            detail="Barbearia não encontrada ou indisponível.",
+        )
+
+    return barbearia
 
 
-@router.get("/servicos")
-def listar_servicos_online(db: Session = Depends(get_db)):
-    return db.query(models.Servico).order_by(
-        models.Servico.nome.asc()
-    ).all()
+def criar_contexto_publico(barbearia_id: int):
+    return SimpleNamespace(
+        perfil="publico",
+        barbearia_id=barbearia_id,
+    )
 
 
-@router.get("/horarios-dia")
+@router.get("/{barbearia_slug}/barbearia")
+def consultar_barbearia_publica(
+    barbearia_slug: str,
+    db: Session = Depends(get_db),
+):
+    barbearia = obter_barbearia_publica(db, barbearia_slug)
+    return {
+        "id": barbearia.id,
+        "codigo": barbearia.codigo,
+        "slug": barbearia.slug,
+        "nome": barbearia.nome,
+        "telefone": barbearia.telefone,
+        "telefone_whatsapp": barbearia.telefone_whatsapp,
+        "endereco": barbearia.endereco,
+        "cidade": barbearia.cidade,
+        "estado": barbearia.estado,
+        "instagram": barbearia.instagram,
+        "logo_url": barbearia.logo_url,
+        "slogan": barbearia.slogan,
+        "imagem_capa_url": barbearia.imagem_capa_url,
+        "cor_primaria": barbearia.cor_primaria,
+        "cor_secundaria": barbearia.cor_secundaria,
+        "cor_fundo": barbearia.cor_fundo,
+        "cor_destaque": barbearia.cor_destaque,
+    }
+
+
+@router.get("/{barbearia_slug}/barbeiros")
+def listar_barbeiros_online(
+    barbearia_slug: str,
+    db: Session = Depends(get_db),
+):
+    barbearia = obter_barbearia_publica(db, barbearia_slug)
+    return (
+        db.query(models.Barbeiro)
+        .filter(
+            models.Barbeiro.barbearia_id == barbearia.id,
+            models.Barbeiro.ativo.is_(True),
+        )
+        .order_by(models.Barbeiro.nome.asc())
+        .all()
+    )
+
+
+@router.get("/{barbearia_slug}/servicos")
+def listar_servicos_online(
+    barbearia_slug: str,
+    db: Session = Depends(get_db),
+):
+    barbearia = obter_barbearia_publica(db, barbearia_slug)
+    return (
+        db.query(models.Servico)
+        .filter(
+            models.Servico.barbearia_id == barbearia.id,
+            models.Servico.ativo.is_(True),
+        )
+        .order_by(models.Servico.nome.asc())
+        .all()
+    )
+
+
+def validar_barbeiro_publico(
+    db: Session,
+    barbearia_id: int,
+    barbeiro_id: int,
+):
+    barbeiro = (
+        db.query(models.Barbeiro)
+        .filter(
+            models.Barbeiro.id == barbeiro_id,
+            models.Barbeiro.barbearia_id == barbearia_id,
+            models.Barbeiro.ativo.is_(True),
+        )
+        .first()
+    )
+    if not barbeiro:
+        raise HTTPException(status_code=404, detail="Barbeiro não encontrado.")
+    return barbeiro
+
+
+def validar_servico_publico(
+    db: Session,
+    barbearia_id: int,
+    servico_id: int,
+):
+    servico = (
+        db.query(models.Servico)
+        .filter(
+            models.Servico.id == servico_id,
+            models.Servico.barbearia_id == barbearia_id,
+            models.Servico.ativo.is_(True),
+        )
+        .first()
+    )
+    if not servico:
+        raise HTTPException(status_code=404, detail="Serviço não encontrado.")
+    return servico
+
+
+@router.get("/{barbearia_slug}/horarios-dia")
 def horarios_disponiveis_dia(
+    barbearia_slug: str,
     servico_id: int = Query(...),
     data: date = Query(...),
     db: Session = Depends(get_db),
 ):
-    servico = db.query(models.Servico).filter(
-        models.Servico.id == servico_id
-    ).first()
+    barbearia = obter_barbearia_publica(db, barbearia_slug)
+    servico = validar_servico_publico(db, barbearia.id, servico_id)
 
-    if not servico:
-        raise HTTPException(status_code=404, detail="Serviço não encontrado.")
-
-    duracao = servico.tempo_medio_minutos or 30
-
-    barbeiros = db.query(models.Barbeiro).filter(
-        models.Barbeiro.ativo == True
-    ).order_by(models.Barbeiro.nome.asc()).all()
+    barbeiros = (
+        db.query(models.Barbeiro)
+        .filter(
+            models.Barbeiro.barbearia_id == barbearia.id,
+            models.Barbeiro.ativo.is_(True),
+        )
+        .order_by(models.Barbeiro.nome.asc())
+        .all()
+    )
 
     horarios_livres = []
-
     for barbeiro in barbeiros:
-        horarios = gerar_horarios_livres_para_barbeiro(
-            db=db,
-            barbeiro_id=barbeiro.id,
-            barbeiro_nome=barbeiro.nome,
-            data_agenda=data,
-            duracao=duracao,
+        horarios_livres.extend(
+            gerar_horarios_livres_para_barbeiro(
+                db=db,
+                barbearia_id=barbearia.id,
+                barbeiro_id=barbeiro.id,
+                barbeiro_nome=barbeiro.nome,
+                data_agenda=data,
+                duracao=servico.tempo_medio_minutos or 30,
+            )
         )
 
-        horarios_livres.extend(horarios)
-
     horarios_livres.sort(key=lambda item: item["data_hora_inicio"])
-
     return horarios_livres
 
 
-@router.get("/horarios-semana")
+@router.get("/{barbearia_slug}/horarios-semana")
 def horarios_disponiveis_semana(
+    barbearia_slug: str,
     barbeiro_id: int = Query(...),
     servico_id: int = Query(...),
     data_inicio: date = Query(...),
     db: Session = Depends(get_db),
 ):
-    barbeiro = db.query(models.Barbeiro).filter(
-        models.Barbeiro.id == barbeiro_id,
-        models.Barbeiro.ativo == True
-    ).first()
-
-    if not barbeiro:
-        raise HTTPException(status_code=404, detail="Barbeiro não encontrado.")
-
-    servico = db.query(models.Servico).filter(
-        models.Servico.id == servico_id
-    ).first()
-
-    if not servico:
-        raise HTTPException(status_code=404, detail="Serviço não encontrado.")
-
-    duracao = servico.tempo_medio_minutos or 30
+    barbearia = obter_barbearia_publica(db, barbearia_slug)
+    barbeiro = validar_barbeiro_publico(db, barbearia.id, barbeiro_id)
+    servico = validar_servico_publico(db, barbearia.id, servico_id)
 
     semana = []
-
-    for i in range(7):
-        data_agenda = data_inicio + timedelta(days=i)
-
+    for indice in range(7):
+        data_agenda = data_inicio + timedelta(days=indice)
         horarios = gerar_horarios_livres_para_barbeiro(
             db=db,
+            barbearia_id=barbearia.id,
             barbeiro_id=barbeiro.id,
             barbeiro_nome=barbeiro.nome,
             data_agenda=data_agenda,
-            duracao=duracao,
+            duracao=servico.tempo_medio_minutos or 30,
         )
-
         semana.append({
             "data": data_agenda.isoformat(),
             "dia_semana": data_agenda.weekday(),
@@ -127,15 +235,21 @@ def horarios_disponiveis_semana(
     return semana
 
 
-@router.post("", response_model=AgendamentoResponse)
+@router.post("/{barbearia_slug}", response_model=AgendamentoResponse)
 def criar_agendamento_online(
+    barbearia_slug: str,
     dados: AgendamentoOnlineCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
+    barbearia = obter_barbearia_publica(db, barbearia_slug)
+    validar_barbeiro_publico(db, barbearia.id, dados.barbeiro_id)
+    validar_servico_publico(db, barbearia.id, dados.servico_id)
+
     cliente = obter_ou_criar_cliente_por_telefone(
         db=db,
+        barbearia=barbearia,
         nome=dados.nome_cliente,
-        telefone=dados.telefone_cliente
+        telefone=dados.telefone_cliente,
     )
 
     dados_agendamento = AgendamentoCreate(
@@ -145,122 +259,82 @@ def criar_agendamento_online(
         data_hora_inicio=dados.data_hora_inicio,
         tipo_atendimento=dados.tipo_atendimento,
         observacoes=dados.observacoes,
-        origem="ONLINE"
+        origem="ONLINE",
     )
 
-    return criar_agendamento_service(db, dados_agendamento)
+    return criar_agendamento_service(
+        db=db,
+        dados=dados_agendamento,
+        usuario_logado=criar_contexto_publico(barbearia.id),
+    )
 
 
-@router.get("/consultar")
+@router.get("/{barbearia_slug}/consultar")
 def consultar_agendamento(
+    barbearia_slug: str,
     telefone: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    telefone_limpo = re.sub(r"\D", "", telefone)
+    barbearia = obter_barbearia_publica(db, barbearia_slug)
+    cliente = buscar_cliente_por_telefone(db, barbearia.id, telefone)
 
-    clientes = db.query(models.Cliente).all()
-
-    clientes_encontrados = []
-
-    for cliente in clientes:
-        telefone_cliente = re.sub(
-            r"\D",
-            "",
-            cliente.telefone or ""
-        )
-
-        if telefone_cliente == telefone_limpo:
-            clientes_encontrados.append(cliente)
-
-    if not clientes_encontrados:
+    if not cliente:
         raise HTTPException(
             status_code=404,
-            detail="Nenhum agendamento encontrado."
+            detail="Nenhum agendamento encontrado.",
         )
-
-    ids_clientes = [
-        cliente.id for cliente in clientes_encontrados
-    ]
 
     agendamentos = (
         db.query(models.Agendamento)
         .filter(
-            models.Agendamento.cliente_id.in_(ids_clientes),
-            models.Agendamento.status != "CANCELADO",
-            models.Agendamento.data_hora_inicio >= datetime.now()
+            models.Agendamento.barbearia_id == barbearia.id,
+            models.Agendamento.cliente_id == cliente.id,
+            func.lower(models.Agendamento.status) != "cancelado",
+            models.Agendamento.data_hora_inicio >= datetime.now(),
         )
-        .order_by(
-            models.Agendamento.data_hora_inicio.asc()
-        )
+        .order_by(models.Agendamento.data_hora_inicio.asc())
         .all()
     )
 
-    resultado = []
-
-    for agendamento in agendamentos:
-        servico = None
-        barbeiro = None
-
-        if agendamento.servico_id:
-            servico = db.query(models.Servico).filter(
-                models.Servico.id == agendamento.servico_id
-            ).first()
-
-        if agendamento.barbeiro_id:
-            barbeiro = db.query(models.Barbeiro).filter(
-                models.Barbeiro.id == agendamento.barbeiro_id
-            ).first()
-
-        resultado.append({
-            "id": agendamento.id,
-            "servico": servico.nome if servico else "-",
-            "barbeiro": barbeiro.nome if barbeiro else "-",
-            "data_hora_inicio": agendamento.data_hora_inicio,
-            "status": agendamento.status,
-            "tipo_atendimento": agendamento.tipo_atendimento,
-            "origem": agendamento.origem
-        })
+    resultado = [{
+        "id": item.id,
+        "servico": item.servico.nome if item.servico else "-",
+        "barbeiro": item.barbeiro.nome if item.barbeiro else "-",
+        "data_hora_inicio": item.data_hora_inicio,
+        "status": item.status,
+        "tipo_atendimento": item.tipo_atendimento,
+        "origem": item.origem,
+    } for item in agendamentos]
 
     return {
-        "cliente": clientes_encontrados[0].nome,
-        "telefone": clientes_encontrados[0].telefone,
-        "agendamentos": resultado
+        "cliente": cliente.nome,
+        "telefone": cliente.telefone,
+        "agendamentos": resultado,
     }
 
 
-@router.put("/cancelar")
+@router.put("/{barbearia_slug}/cancelar")
 def cancelar_agendamento_online(
+    barbearia_slug: str,
     telefone: str,
     agendamento_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    telefone_limpo = re.sub(r"\D", "", telefone)
+    barbearia = obter_barbearia_publica(db, barbearia_slug)
+    cliente = buscar_cliente_por_telefone(db, barbearia.id, telefone)
 
-    clientes = db.query(models.Cliente).all()
-
-    ids_clientes = []
-
-    for cliente in clientes:
-        telefone_cliente = re.sub(
-            r"\D",
-            "",
-            cliente.telefone or ""
-        )
-
-        if telefone_cliente == telefone_limpo:
-            ids_clientes.append(cliente.id)
-
-    if not ids_clientes:
+    if not cliente:
         raise HTTPException(
             status_code=404,
-            detail="Cliente não encontrado para este telefone."
+            detail="Cliente não encontrado para este telefone.",
         )
 
     agendamento = (
         db.query(models.Agendamento)
         .filter(
             models.Agendamento.id == agendamento_id,
-            models.Agendamento.cliente_id.in_(ids_clientes)
+            models.Agendamento.barbearia_id == barbearia.id,
+            models.Agendamento.cliente_id == cliente.id,
         )
         .first()
     )
@@ -268,122 +342,134 @@ def cancelar_agendamento_online(
     if not agendamento:
         raise HTTPException(
             status_code=404,
-            detail="Agendamento não pertence ao telefone informado."
+            detail="Agendamento não pertence ao telefone informado.",
         )
-
-    if agendamento.status.upper() == "CANCELADO":
-        raise HTTPException(
-            status_code=400,
-            detail="Este agendamento já está cancelado."
-        )
-
+    if (agendamento.status or "").lower() == "cancelado":
+        raise HTTPException(status_code=400, detail="Agendamento já cancelado.")
     if agendamento.data_hora_inicio <= datetime.now():
         raise HTTPException(
             status_code=400,
-            detail="Não é possível cancelar agendamentos já iniciados ou passados."
+            detail="Não é possível cancelar agendamentos passados.",
         )
 
-    observacao_atual = agendamento.observacoes or ""
-
-    agendamento.status = "CANCELADO"
+    observacao = agendamento.observacoes or ""
+    agendamento.status = "cancelado"
     agendamento.observacoes = (
-        observacao_atual +
-        "\nCancelado pelo cliente via portal online."
-    )
-
+        observacao + "\nCancelado pelo cliente via portal online."
+    ).strip()
     db.commit()
     db.refresh(agendamento)
 
     return {
         "mensagem": "Agendamento cancelado com sucesso.",
         "agendamento_id": agendamento.id,
-        "status": agendamento.status
+        "status": agendamento.status,
     }
+
+
+def normalizar_telefone(telefone: str) -> str:
+    return re.sub(r"\D", "", telefone or "")
+
+
+def buscar_cliente_por_telefone(
+    db: Session,
+    barbearia_id: int,
+    telefone: str,
+):
+    telefone_limpo = normalizar_telefone(telefone)
+    if not telefone_limpo:
+        return None
+
+    clientes = (
+        db.query(models.Cliente)
+        .filter(models.Cliente.barbearia_id == barbearia_id)
+        .all()
+    )
+
+    return next(
+        (
+            cliente
+            for cliente in clientes
+            if normalizar_telefone(cliente.telefone) == telefone_limpo
+        ),
+        None,
+    )
+
 
 def obter_ou_criar_cliente_por_telefone(
     db: Session,
+    barbearia: models.Barbearia,
     nome: str,
-    telefone: str
+    telefone: str,
 ):
-    nome_limpo = nome.strip().upper()
-    telefone_limpo = telefone.strip()
+    nome_limpo = (nome or "").strip().upper()
+    telefone_limpo = normalizar_telefone(telefone)
 
-    if not nome_limpo:
-        raise HTTPException(
-            status_code=400,
-            detail="Nome do cliente é obrigatório."
-        )
-
+    if len(nome_limpo) < 2:
+        raise HTTPException(status_code=400, detail="Nome do cliente inválido.")
     if not telefone_limpo:
-        raise HTTPException(
-            status_code=400,
-            detail="Telefone do cliente é obrigatório."
-        )
+        raise HTTPException(status_code=400, detail="Telefone obrigatório.")
 
-    telefone_apenas_numeros = re.sub(r"\D", "", telefone_limpo)
+    cliente = buscar_cliente_por_telefone(
+        db,
+        barbearia.id,
+        telefone_limpo,
+    )
+    if cliente:
+        return cliente
 
-    clientes = db.query(models.Cliente).all()
-
-    for cliente in clientes:
-        telefone_cliente = re.sub(
-            r"\D",
-            "",
-            cliente.telefone or ""
-        )
-
-        if telefone_cliente == telefone_apenas_numeros:
-            return cliente
-
+    numero, codigo = gerar_codigo_comercial(
+        db=db,
+        barbearia=barbearia,
+        tipo="CLIENTE",
+    )
     novo_cliente = models.Cliente(
+        barbearia_id=barbearia.id,
+        numero_sequencial=numero,
+        codigo=codigo,
         nome=nome_limpo,
         telefone=telefone_limpo,
         email=None,
-        observacoes="Cliente cadastrado automaticamente pelo agendamento online.",
-        ativo=True
+        observacoes=(
+            "Cliente cadastrado automaticamente pelo agendamento online."
+        ),
+        ativo=True,
     )
-
     db.add(novo_cliente)
     db.commit()
     db.refresh(novo_cliente)
-
     return novo_cliente
 
 
 def obter_horario_trabalho_barbeiro(
     db: Session,
+    barbearia_id: int,
     barbeiro_id: int,
-    data_agenda: date
+    data_agenda: date,
 ):
     dia_semana = data_agenda.weekday()
-
-    config_padrao = db.query(
-        models.ConfiguracaoFuncionamento
-    ).filter(
-        models.ConfiguracaoFuncionamento.dia_semana == dia_semana
-    ).first()
-
-    disponibilidade = db.query(
-        models.BarbeiroDisponibilidade
-    ).filter(
-        models.BarbeiroDisponibilidade.barbeiro_id == barbeiro_id,
-        models.BarbeiroDisponibilidade.dia_semana == dia_semana
-    ).first()
+    config_padrao = buscar_configuracao_publica_por_dia(
+        db=db,
+        barbearia_id=barbearia_id,
+        dia_semana=dia_semana,
+    )
+    disponibilidade = buscar_disponibilidade_publica(
+        db=db,
+        barbearia_id=barbearia_id,
+        barbeiro_id=barbeiro_id,
+        dia_semana=dia_semana,
+    )
 
     if disponibilidade and disponibilidade.usa_padrao is False:
         if disponibilidade.trabalha is False:
             return None
-
         return {
             "hora_inicio": disponibilidade.hora_inicio,
             "hora_fim": disponibilidade.hora_fim,
         }
 
-    if not config_padrao:
+    if not config_padrao or config_padrao.trabalha is False:
         return None
-
-    if config_padrao.trabalha is False:
-        return None
-
     return {
         "hora_inicio": config_padrao.hora_inicio,
         "hora_fim": config_padrao.hora_fim,
@@ -393,9 +479,7 @@ def obter_horario_trabalho_barbeiro(
 def converter_para_time(valor):
     if hasattr(valor, "hour") and hasattr(valor, "minute"):
         return valor
-
     valor_str = str(valor)
-
     try:
         return datetime.strptime(valor_str, "%H:%M").time()
     except ValueError:
@@ -404,68 +488,63 @@ def converter_para_time(valor):
 
 def gerar_horarios_livres_para_barbeiro(
     db: Session,
+    barbearia_id: int,
     barbeiro_id: int,
     barbeiro_nome: str,
     data_agenda: date,
-    duracao: int
+    duracao: int,
 ):
     horario_trabalho = obter_horario_trabalho_barbeiro(
         db=db,
+        barbearia_id=barbearia_id,
         barbeiro_id=barbeiro_id,
-        data_agenda=data_agenda
+        data_agenda=data_agenda,
     )
-
     if not horario_trabalho:
         return []
 
     hora_inicio = datetime.combine(
         data_agenda,
-        converter_para_time(horario_trabalho["hora_inicio"])
+        converter_para_time(horario_trabalho["hora_inicio"]),
     )
-
     hora_fim = datetime.combine(
         data_agenda,
-        converter_para_time(horario_trabalho["hora_fim"])
+        converter_para_time(horario_trabalho["hora_fim"]),
     )
-
-    intervalo = 30
     agora = datetime.now()
 
-    agendamentos = db.query(models.Agendamento).filter(
-        models.Agendamento.barbeiro_id == barbeiro_id,
-        models.Agendamento.status != "CANCELADO",
-        models.Agendamento.data_hora_inicio < hora_fim,
-        models.Agendamento.data_hora_fim > hora_inicio,
-    ).all()
+    agendamentos = (
+        db.query(models.Agendamento)
+        .filter(
+            models.Agendamento.barbearia_id == barbearia_id,
+            models.Agendamento.barbeiro_id == barbeiro_id,
+            func.lower(models.Agendamento.status) != "cancelado",
+            models.Agendamento.data_hora_inicio < hora_fim,
+            models.Agendamento.data_hora_fim > hora_inicio,
+        )
+        .all()
+    )
 
     horarios = []
     atual = hora_inicio
-
     while atual + timedelta(minutes=duracao) <= hora_fim:
-        inicio_novo = atual
         fim_novo = atual + timedelta(minutes=duracao)
+        ocupado = any(
+            atual < item.data_hora_fim
+            and fim_novo > item.data_hora_inicio
+            for item in agendamentos
+        )
 
-        if inicio_novo >= agora:
-            ocupado = False
+        if atual >= agora and not ocupado:
+            horarios.append({
+                "horario": atual.strftime("%H:%M"),
+                "data": data_agenda.isoformat(),
+                "data_hora_inicio": atual.isoformat(),
+                "data_hora_fim": fim_novo.isoformat(),
+                "barbeiro_id": barbeiro_id,
+                "barbeiro_nome": barbeiro_nome,
+            })
 
-            for agendamento in agendamentos:
-                inicio_existente = agendamento.data_hora_inicio
-                fim_existente = agendamento.data_hora_fim
-
-                if inicio_novo < fim_existente and fim_novo > inicio_existente:
-                    ocupado = True
-                    break
-
-            if not ocupado:
-                horarios.append({
-                    "horario": inicio_novo.strftime("%H:%M"),
-                    "data": data_agenda.isoformat(),
-                    "data_hora_inicio": inicio_novo.isoformat(),
-                    "data_hora_fim": fim_novo.isoformat(),
-                    "barbeiro_id": barbeiro_id,
-                    "barbeiro_nome": barbeiro_nome,
-                })
-
-        atual += timedelta(minutes=intervalo)
+        atual += timedelta(minutes=30)
 
     return horarios

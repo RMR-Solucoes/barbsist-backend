@@ -700,7 +700,7 @@ class Estilo(Base):
     )    
 
 
-class Agendamento(Base):
+class Agendamento(BarbeariaMixin, Base):
     __tablename__ = "agendamentos"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -1010,8 +1010,16 @@ class PagamentoPlano(Base):
     
 
 
-class ConfiguracaoFuncionamento(Base):
+class ConfiguracaoFuncionamento(BarbeariaMixin, Base):
     __tablename__ = "configuracao_funcionamento"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "barbearia_id",
+            "dia_semana",
+            name="uq_config_funcionamento_barbearia_dia"
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
 
@@ -1021,8 +1029,17 @@ class ConfiguracaoFuncionamento(Base):
     hora_inicio = Column(String, default="08:00")
     hora_fim = Column(String, default="20:00")
 
-class BarbeiroDisponibilidade(Base):
+class BarbeiroDisponibilidade(BarbeariaMixin, Base):
     __tablename__ = "barbeiro_disponibilidade"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "barbearia_id",
+            "barbeiro_id",
+            "dia_semana",
+            name="uq_disponibilidade_barbearia_barbeiro_dia"
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
 
@@ -1068,4 +1085,4 @@ class ContaPagar(Base):
     data_pagamento = Column(Date, nullable=True)
     status = Column(String, default="PENDENTE")
     forma_pagamento = Column(String, nullable=True)
-    observacoes = Column(String, nullable=True)    
+    observacoes = Column(String, nullable=True)

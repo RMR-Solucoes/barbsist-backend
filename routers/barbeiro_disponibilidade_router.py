@@ -1,15 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from auth.permissions import (
+    admin_ou_gerente,
+    admin_gerente_recepcao_ou_barbeiro,
+)
 from database import get_db
 from schemas import (
     BarbeiroDisponibilidadeResponse,
     BarbeiroDisponibilidadeUpdate,
 )
 from services.barbeiro_disponibilidade_service import (
-    listar_disponibilidade_por_barbeiro,
     atualizar_disponibilidade,
+    listar_disponibilidade_por_barbeiro,
 )
+
 
 router = APIRouter(
     prefix="/barbeiro-disponibilidade",
@@ -19,39 +24,41 @@ router = APIRouter(
 
 @router.get(
     "/{barbeiro_id}",
-    response_model=list[BarbeiroDisponibilidadeResponse]
+    response_model=list[BarbeiroDisponibilidadeResponse],
 )
 def listar_por_barbeiro(
     barbeiro_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin_gerente_recepcao_ou_barbeiro),
 ):
-    dados = listar_disponibilidade_por_barbeiro(db, barbeiro_id)
+    dados = listar_disponibilidade_por_barbeiro(
+        db=db,
+        barbeiro_id=barbeiro_id,
+        usuario_logado=usuario_logado,
+    )
 
     if dados is None:
-        raise HTTPException(status_code=404, detail="Barbeiro não encontrado.")
+        raise HTTPException(
+            status_code=404,
+            detail="Barbeiro não encontrado.",
+        )
 
     return dados
 
 
 @router.put(
     "/{disponibilidade_id}",
-    response_model=BarbeiroDisponibilidadeResponse
+    response_model=BarbeiroDisponibilidadeResponse,
 )
 def atualizar(
     disponibilidade_id: int,
     dados: BarbeiroDisponibilidadeUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin_ou_gerente),
 ):
-    disponibilidade = atualizar_disponibilidade(
+    return atualizar_disponibilidade(
         db=db,
         disponibilidade_id=disponibilidade_id,
         dados=dados,
+        usuario_logado=usuario_logado,
     )
-
-    if not disponibilidade:
-        raise HTTPException(
-            status_code=404,
-            detail="Disponibilidade não encontrada."
-        )
-
-    return disponibilidade
