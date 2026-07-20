@@ -70,7 +70,12 @@ app.add_middleware(
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "https://barbsist-frontend.vercel.app",
+        "https://barbsist-frontend-dkpauelg2-aulaipros-projects.vercel.app",
     ],
+    allow_origin_regex=(
+        r"https://barbsist-frontend-[a-z0-9-]+"
+        r"-aulaipros-projects\.vercel\.app"
+    ),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
