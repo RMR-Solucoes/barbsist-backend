@@ -1,108 +1,143 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from database import get_db
-import models
 from schemas import ServicoCreate, ServicoResponse
+
 from auth.permissions import (
-    admin_ou_gerente
+    admin_gerente_ou_recepcao,
 )
+
+
+from services.servico_service import (
+    criar_servico_service,
+    listar_servicos_service,
+    buscar_servico_service,
+    atualizar_servico_service,
+    inativar_servico_service,
+    reativar_servico_service,
+)
+import models
 
 router = APIRouter(
     prefix="/servicos",
     tags=["Serviços"],
-    dependencies=[
-        Depends(admin_ou_gerente)
-    ]
+    
+        
+    
 )
 
 
-@router.post("", response_model=ServicoResponse)
+@router.post(
+    "",
+    response_model=ServicoResponse
+)
 def criar_servico(
-    servico: ServicoCreate,
-    db: Session = Depends(get_db)
+    dados: ServicoCreate,
+    db: Session = Depends(get_db),
+    usuario_logado: models.Usuario = Depends(
+    admin_gerente_ou_recepcao
+)
 ):
-    novo_servico = models.Servico(
-        nome=servico.nome,
-        preco=servico.preco,
-        tempo_medio_minutos=servico.tempo_medio_minutos
+    return criar_servico_service(
+        dados=dados,
+        db=db,
+        usuario_logado=usuario_logado
     )
 
-    db.add(novo_servico)
-    db.commit()
-    db.refresh(novo_servico)
 
-    return novo_servico
+@router.get(
+    "",
+    response_model=list[ServicoResponse]
+)
+def listar_servicos(
+    apenas_ativos: bool = True,
+    db: Session = Depends(get_db),
+    usuario_logado: models.Usuario = Depends(
+    admin_gerente_ou_recepcao
+)
+):
+    return listar_servicos_service(
+        db=db,
+        usuario_logado=usuario_logado,
+        apenas_ativos=apenas_ativos
+    )
 
 
-@router.get("", response_model=list[ServicoResponse])
-def listar_servicos(db: Session = Depends(get_db)):
-    return db.query(models.Servico).all()
-
-
-@router.get("/{servico_id}", response_model=ServicoResponse)
+@router.get(
+    "/{servico_id}",
+    response_model=ServicoResponse
+)
 def buscar_servico(
     servico_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado: models.Usuario = Depends(
+    admin_gerente_ou_recepcao
+)
 ):
-    servico = db.query(models.Servico).filter(
-        models.Servico.id == servico_id
-    ).first()
-
-    if not servico:
-        raise HTTPException(
-            status_code=404,
-            detail="Serviço não encontrado"
-        )
-
-    return servico
+    return buscar_servico_service(
+        servico_id=servico_id,
+        db=db,
+        usuario_logado=usuario_logado,
+        exigir_ativo=False
+    )
 
 
-@router.put("/{servico_id}", response_model=ServicoResponse)
+@router.put(
+    "/{servico_id}",
+    response_model=ServicoResponse
+)
 def atualizar_servico(
     servico_id: int,
     dados: ServicoCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado: models.Usuario = Depends(
+    admin_gerente_ou_recepcao
+)
 ):
-    servico = db.query(models.Servico).filter(
-        models.Servico.id == servico_id
-    ).first()
-
-    if not servico:
-        raise HTTPException(
-            status_code=404,
-            detail="Serviço não encontrado"
-        )
-
-    servico.nome = dados.nome
-    servico.preco = dados.preco
-    servico.tempo_medio_minutos = dados.tempo_medio_minutos
-
-    db.commit()
-    db.refresh(servico)
-
-    return servico
+    return atualizar_servico_service(
+        servico_id=servico_id,
+        dados=dados,
+        db=db,
+        usuario_logado=usuario_logado
+    )
 
 
-@router.delete("/{servico_id}")
-def deletar_servico(
+@router.delete(
+    "/{servico_id}"
+)
+def inativar_servico(
     servico_id: int,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    usuario_logado: models.Usuario = Depends(
+    admin_gerente_ou_recepcao
+)
 ):
-    servico = db.query(models.Servico).filter(
-        models.Servico.id == servico_id
-    ).first()
-
-    if not servico:
-        raise HTTPException(
-            status_code=404,
-            detail="Serviço não encontrado"
-        )
-
-    servico.ativo = False
-    db.commit()
+    servico = inativar_servico_service(
+        servico_id=servico_id,
+        db=db,
+        usuario_logado=usuario_logado
+    )
 
     return {
-        "mensagem": "Serviço desativado com sucesso",
-        "servico_id": servico_id
+        "mensagem": "Serviço desativado com sucesso.",
+        "servico_id": servico.id
     }
+
+
+@router.put(
+    "/{servico_id}/reativar",
+    response_model=ServicoResponse
+)
+def reativar_servico(
+    servico_id: int,
+    db: Session = Depends(get_db),
+    usuario_logado: models.Usuario = Depends(
+    admin_gerente_ou_recepcao
+)
+):
+    return reativar_servico_service(
+        servico_id=servico_id,
+        db=db,
+        usuario_logado=usuario_logado
+    )

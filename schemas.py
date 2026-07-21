@@ -211,6 +211,15 @@ class ProdutoCreate(ProdutoBase):
     pass
 
 
+class ProdutoUpdate(BaseModel):
+    nome: Optional[str] = None
+    categoria: Optional[str] = None
+    preco_custo: Optional[float] = None
+    preco_venda: Optional[float] = None
+    estoque: Optional[int] = None
+    codigo_qr: Optional[str] = None
+
+
 class ProdutoResponse(ProdutoBase):
     id: int
     numero_sequencial: int
@@ -220,7 +229,6 @@ class ProdutoResponse(ProdutoBase):
 
     class Config:
         from_attributes = True
-
 # =========================
 # ITENS DA COMANDA
 # =========================
