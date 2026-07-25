@@ -4,42 +4,118 @@ from sqlalchemy.orm import Session
 from database import get_db
 
 from schemas import (
+    AlterarMinhaSenhaRequest,
+    CadastroBarbeariaRequest,
+    CadastroBarbeariaResponse,
+    EsqueciSenhaRequest,
     LoginRequest,
+    MensagemResponse,
+    RedefinirSenhaRequest,
     TokenResponse,
-    UsuarioResponse
+    UsuarioResponse,
 )
 
 from auth.auth_service import login_service
+from auth.cadastro_service import cadastrar_barbearia_service
 from auth.dependencies import get_usuario_logado
+from auth.password_service import (
+    alterar_minha_senha_service,
+    redefinir_senha_service,
+    solicitar_recuperacao_senha_service,
+)
 
 
 router = APIRouter(
     prefix="/auth",
-    tags=["Autenticação"]
+    tags=["Autenticação"],
 )
 
 
 @router.post(
     "/login",
-    response_model=TokenResponse
+    response_model=TokenResponse,
 )
 def login(
     dados: LoginRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     return login_service(
         db=db,
         barbearia_slug=dados.barbearia_slug,
         email=dados.email,
-        senha=dados.senha
+        senha=dados.senha,
+    )
+
+
+@router.post(
+    "/cadastrar-barbearia",
+    response_model=CadastroBarbeariaResponse,
+    status_code=201,
+)
+def cadastrar_barbearia(
+    dados: CadastroBarbeariaRequest,
+    db: Session = Depends(get_db),
+):
+    return cadastrar_barbearia_service(
+        db=db,
+        dados=dados,
     )
 
 
 @router.get(
     "/me",
-    response_model=UsuarioResponse
+    response_model=UsuarioResponse,
 )
 def usuario_logado(
-    usuario=Depends(get_usuario_logado)
+    usuario=Depends(get_usuario_logado),
 ):
     return usuario
+
+
+@router.put(
+    "/minha-senha",
+    response_model=MensagemResponse,
+)
+def alterar_minha_senha(
+    dados: AlterarMinhaSenhaRequest,
+    db: Session = Depends(get_db),
+    usuario=Depends(get_usuario_logado),
+):
+    return alterar_minha_senha_service(
+        senha_atual=dados.senha_atual,
+        nova_senha=dados.nova_senha,
+        confirmar_nova_senha=dados.confirmar_nova_senha,
+        db=db,
+        usuario_logado=usuario,
+    )
+
+
+@router.post(
+    "/esqueci-senha",
+    response_model=MensagemResponse,
+)
+def esqueci_senha(
+    dados: EsqueciSenhaRequest,
+    db: Session = Depends(get_db),
+):
+    return solicitar_recuperacao_senha_service(
+        barbearia_slug=dados.barbearia_slug,
+        email=dados.email,
+        db=db,
+    )
+
+
+@router.post(
+    "/redefinir-senha",
+    response_model=MensagemResponse,
+)
+def redefinir_senha(
+    dados: RedefinirSenhaRequest,
+    db: Session = Depends(get_db),
+):
+    return redefinir_senha_service(
+        token=dados.token,
+        nova_senha=dados.nova_senha,
+        confirmar_nova_senha=dados.confirmar_nova_senha,
+        db=db,
+    )

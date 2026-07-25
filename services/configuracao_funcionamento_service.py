@@ -12,6 +12,7 @@ from schemas import ConfiguracaoFuncionamentoUpdate
 def criar_configuracao_padrao_por_barbearia(
     db: Session,
     barbearia_id: int,
+    realizar_commit: bool = True,
 ):
     existentes = (
         db.query(models.ConfiguracaoFuncionamento)
@@ -19,11 +20,17 @@ def criar_configuracao_padrao_por_barbearia(
             models.ConfiguracaoFuncionamento.barbearia_id
             == barbearia_id
         )
-        .order_by(models.ConfiguracaoFuncionamento.dia_semana)
+        .order_by(
+            models.ConfiguracaoFuncionamento.dia_semana
+        )
         .all()
     )
 
-    dias_existentes = {item.dia_semana for item in existentes}
+    dias_existentes = {
+        item.dia_semana
+        for item in existentes
+    }
+
     novos = []
 
     for dia in range(7):
@@ -31,18 +38,27 @@ def criar_configuracao_padrao_por_barbearia(
             continue
 
         trabalha = dia != 6
+
         config = models.ConfiguracaoFuncionamento(
             barbearia_id=barbearia_id,
             dia_semana=dia,
             trabalha=trabalha,
             hora_inicio="08:00",
-            hora_fim="18:00" if dia == 5 else "20:00",
+            hora_fim=(
+                "18:00"
+                if dia == 5
+                else "20:00"
+            ),
         )
+
         db.add(config)
         novos.append(config)
 
     if novos:
-        db.commit()
+        if realizar_commit:
+            db.commit()
+        else:
+            db.flush()
 
     return (
         db.query(models.ConfiguracaoFuncionamento)
@@ -50,10 +66,11 @@ def criar_configuracao_padrao_por_barbearia(
             models.ConfiguracaoFuncionamento.barbearia_id
             == barbearia_id
         )
-        .order_by(models.ConfiguracaoFuncionamento.dia_semana)
+        .order_by(
+            models.ConfiguracaoFuncionamento.dia_semana
+        )
         .all()
     )
-
 
 def criar_configuracao_padrao(db: Session, usuario_logado):
     return criar_configuracao_padrao_por_barbearia(

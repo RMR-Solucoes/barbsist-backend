@@ -122,7 +122,8 @@ def gerar_proximo_codigo(
     ) + 1
 
 
-def criar_barbearia_service(
+
+def criar_barbearia_sem_commit(
     db: Session,
     dados
 ):
@@ -193,8 +194,21 @@ def criar_barbearia_service(
         ativa=True
     )
 
+    db.add(barbearia)
+    db.flush()
+
+    return barbearia
+
+def criar_barbearia_service(
+    db: Session,
+    dados
+):
     try:
-        db.add(barbearia)
+        barbearia = criar_barbearia_sem_commit(
+            db=db,
+            dados=dados
+        )
+
         db.commit()
         db.refresh(barbearia)
 

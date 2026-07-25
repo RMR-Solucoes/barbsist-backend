@@ -391,7 +391,41 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
 
+class CadastroBarbeariaRequest(BaseModel):
+    nome_barbearia: str
+    responsavel: str
+    email: str
+    telefone_whatsapp: str
+    cidade: str
+    estado: str
+    senha: str
+    confirmar_senha: str
+    aceite_termos: bool
 
+
+class CadastroBarbeariaLoginResponse(BaseModel):
+    slug: str
+    email: str
+
+
+class CadastroBarbeariaInfoResponse(BaseModel):
+    id: int
+    codigo: int
+    nome: str
+    slug: str
+
+
+class CadastroAdministradorResponse(BaseModel):
+    email: str
+
+
+class CadastroBarbeariaResponse(BaseModel):
+    sucesso: bool
+    mensagem: str
+    barbearia: CadastroBarbeariaInfoResponse
+    administrador: CadastroAdministradorResponse
+    login: CadastroBarbeariaLoginResponse
+    proximo_passo: str
 # =========================
 # ESTILOS DE CORTE / BARBA
 # =========================
@@ -719,3 +753,24 @@ class UsuarioUpdate(BaseModel):
 
 class AlterarSenhaUsuarioRequest(BaseModel):
     nova_senha: str
+
+
+class AlterarMinhaSenhaRequest(BaseModel):
+    senha_atual: str
+    nova_senha: str
+    confirmar_nova_senha: str
+
+
+class EsqueciSenhaRequest(BaseModel):
+    barbearia_slug: str
+    email: str
+
+
+class RedefinirSenhaRequest(BaseModel):
+    token: str
+    nova_senha: str
+    confirmar_nova_senha: str
+
+
+class MensagemResponse(BaseModel):
+    mensagem: str

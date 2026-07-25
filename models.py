@@ -671,6 +671,62 @@ class Usuario(BarbeariaMixin, Base):
     )
     
 
+
+class TokenRecuperacaoSenha(Base):
+    __tablename__ = "tokens_recuperacao_senha"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    usuario_id = Column(
+        Integer,
+        ForeignKey("usuarios.id"),
+        nullable=False,
+        index=True
+    )
+
+    barbearia_id = Column(
+        Integer,
+        ForeignKey("barbearias.id"),
+        nullable=False,
+        index=True
+    )
+
+    token_hash = Column(
+        String,
+        nullable=False,
+        unique=True,
+        index=True
+    )
+
+    criado_em = Column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False
+    )
+
+    expira_em = Column(
+        DateTime,
+        nullable=False
+    )
+
+    utilizado = Column(
+        Boolean,
+        default=False,
+        nullable=False
+    )
+
+    utilizado_em = Column(
+        DateTime,
+        nullable=True
+    )
+
+    usuario = relationship("Usuario")
+    barbearia = relationship("Barbearia")
+
 class Estilo(Base):
     __tablename__ = "estilos"
 

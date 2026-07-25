@@ -101,8 +101,3 @@ def login_service(
         "access_token": token,
         "token_type": "bearer"
     }
-
-    return {
-        "access_token": token,
-        "token_type": "bearer"
-    }
