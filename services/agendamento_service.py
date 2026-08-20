@@ -77,21 +77,13 @@ def validar_servico(db, servico_id, usuario_logado):
     return servico
 
 
-def validar_estilo(db, estilo_id, nome_campo):
-    """
-    Estilos ainda são globais no model atual. O isolamento desta entidade
-    será tratado na etapa própria de Estilos/Configurações.
-    """
+def validar_estilo(db, estilo_id, nome_campo, usuario_logado):
     if estilo_id is None:
         return None
 
-    estilo = (
-        db.query(models.Estilo)
-        .filter(
-            models.Estilo.id == estilo_id,
-            models.Estilo.ativo.is_(True),
-        )
-        .first()
+    estilo = buscar_da_barbearia(
+        db=db, model=models.Estilo, registro_id=estilo_id, usuario=usuario_logado,
+        mensagem_nao_encontrado=f"{nome_campo} não encontrado ou inativo.",
     )
 
     if not estilo:
@@ -153,8 +145,8 @@ def criar_agendamento_service(db, dados, usuario_logado):
         usuario_logado,
     )
 
-    validar_estilo(db, dados.estilo_corte_id, "Estilo de corte")
-    validar_estilo(db, dados.estilo_barba_id, "Estilo de barba")
+    validar_estilo(db, dados.estilo_corte_id, "Estilo de corte", usuario_logado)
+    validar_estilo(db, dados.estilo_barba_id, "Estilo de barba", usuario_logado)
 
     tipo_atendimento = (
         getattr(dados, "tipo_atendimento", "avulso") or "avulso"
@@ -226,6 +218,14 @@ def criar_agendamento_service(db, dados, usuario_logado):
                     "Escolha atendimento avulso."
                 ),
             )
+
+        servico_no_plano = db.query(models.PlanoServico).join(models.Plano, models.Plano.id == models.PlanoServico.plano_id).filter(
+            models.PlanoServico.plano_id == assinatura.plano_id,
+            models.PlanoServico.servico_id == servico.id,
+            models.Plano.barbearia_id == barbearia_id,
+        ).first()
+        if not servico_no_plano:
+            raise HTTPException(status_code=400, detail="O serviço selecionado não está incluído no plano do cliente.")
 
     inicio = dados.data_hora_inicio
     fim = inicio + timedelta(minutes=servico.tempo_medio_minutos or 30)
@@ -384,6 +384,7 @@ def converter_agendamento_em_comanda_service(
         "cancelado",
         "concluido",
         "nao_compareceu",
+        "em_atendimento",
     ):
         raise HTTPException(
             status_code=400,

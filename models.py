@@ -575,23 +575,102 @@ class ItemComanda(Base):
     )
 
 
-class Caixa(Base):
+class Caixa(BarbeariaMixin, Base):
     __tablename__ = "caixa"
 
-    id = Column(Integer, primary_key=True, index=True)
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
 
-    tipo = Column(String, nullable=False)  # entrada ou saida
-    descricao = Column(String, nullable=False)
+    tipo = Column(
+        String,
+        nullable=False
+    )  # entrada | saida
 
-    valor = Column(Float, nullable=False)
+    descricao = Column(
+        String,
+        nullable=False
+    )
 
-    forma_pagamento = Column(String, nullable=True)
+    valor = Column(
+        Float,
+        nullable=False
+    )
 
-    data = Column(DateTime, default=datetime.now)
+    forma_pagamento = Column(
+        String,
+        nullable=True
+    )
+
+    # MANUAL | COMANDA | PLANO | CONTA_RECEBER |
+    # CONTA_PAGAR | ESTORNO | SANGRIA | SUPRIMENTO
+    origem = Column(
+        String,
+        default="MANUAL",
+        nullable=False,
+        index=True
+    )
+
+    # ID do registro que originou a movimentação.
+    # Exemplo: ID da comanda, assinatura ou conta.
+    referencia_id = Column(
+        Integer,
+        nullable=True,
+        index=True
+    )
+
+    # ATIVO | ESTORNADO | CANCELADO
+    status = Column(
+        String,
+        default="ATIVO",
+        nullable=False,
+        index=True
+    )
+
+    observacoes = Column(
+        String,
+        nullable=True
+    )
+
+    # Usuário que lançou manualmente ou executou a operação.
+    usuario_id = Column(
+        Integer,
+        ForeignKey("usuarios.id"),
+        nullable=True,
+        index=True
+    )
+
+    # Preenchido quando esta movimentação for um estorno.
+    movimentacao_origem_id = Column(
+        Integer,
+        ForeignKey("caixa.id"),
+        nullable=True,
+        index=True
+    )
+
+    data = Column(
+        DateTime,
+        default=datetime.now,
+        nullable=False,
+        index=True
+    )
+
+    usuario = relationship(
+        "Usuario",
+        foreign_keys=[usuario_id]
+    )
+
+    movimentacao_origem = relationship(
+        "Caixa",
+        remote_side=[id],
+        foreign_keys=[movimentacao_origem_id]
+    )
 
 
 
-class Comissao(Base):
+class Comissao(BarbeariaMixin, Base):
     __tablename__ = "comissoes"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -611,6 +690,15 @@ class Comissao(Base):
 
 class Usuario(BarbeariaMixin, Base):
     __tablename__ = "usuarios"
+
+    # Usu?rios operacionais pertencem a uma barbearia.
+    # O superadmin da plataforma ? global e pode usar NULL.
+    barbearia_id = Column(
+        Integer,
+        ForeignKey("barbearias.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True
+    )
 
     __table_args__ = (
         UniqueConstraint(
@@ -691,7 +779,7 @@ class TokenRecuperacaoSenha(Base):
     barbearia_id = Column(
         Integer,
         ForeignKey("barbearias.id"),
-        nullable=False,
+        nullable=True,
         index=True
     )
 
@@ -727,7 +815,7 @@ class TokenRecuperacaoSenha(Base):
     usuario = relationship("Usuario")
     barbearia = relationship("Barbearia")
 
-class Estilo(Base):
+class Estilo(BarbeariaMixin, Base):
     __tablename__ = "estilos"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -871,6 +959,11 @@ class Plano(BarbeariaMixin, Base):
         nullable=False
     )
 
+    # Pre?os por forma de pagamento. Se nulos, o sistema usa ``valor``.
+    valor_pix = Column(Float, nullable=True)
+    valor_cartao = Column(Float, nullable=True)
+    max_parcelas_cartao = Column(Integer, default=1, nullable=False)
+
     quantidade_servicos = Column(
         Integer,
         default=0
@@ -896,6 +989,11 @@ class Plano(BarbeariaMixin, Base):
         back_populates="plano",
         cascade="all, delete-orphan"
     )
+
+    @property
+    def servicos_ids(self):
+        return [vinculo.servico_id for vinculo in (self.servicos or [])]
+
 
 class PlanoServico(Base):
     __tablename__ = "planos_servicos"
@@ -1116,7 +1214,7 @@ class BarbeiroDisponibilidade(BarbeariaMixin, Base):
 
     barbeiro = relationship("Barbeiro")    
 
-class ContaReceber(Base):
+class ContaReceber(BarbeariaMixin, Base):
     __tablename__ = "contas_receber"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -1130,7 +1228,7 @@ class ContaReceber(Base):
     observacoes = Column(String, nullable=True)
 
 
-class ContaPagar(Base):
+class ContaPagar(BarbeariaMixin, Base):
     __tablename__ = "contas_pagar"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -1142,3 +1240,170 @@ class ContaPagar(Base):
     status = Column(String, default="PENDENTE")
     forma_pagamento = Column(String, nullable=True)
     observacoes = Column(String, nullable=True)
+
+
+class MercadoPagoConfiguracao(Base):
+    __tablename__ = "mercado_pago_configuracoes"
+    __table_args__ = (UniqueConstraint("barbearia_id", name="uq_mp_config_barbearia"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    barbearia_id = Column(Integer, ForeignKey("barbearias.id"), nullable=False, index=True)
+    access_token_encrypted = Column(String, nullable=True)
+    refresh_token_encrypted = Column(String, nullable=True)
+    webhook_secret_encrypted = Column(String, nullable=True)
+    public_key = Column(String, nullable=True)
+    mercado_pago_user_id = Column(String, nullable=True, index=True)
+    token_type = Column(String, nullable=True)
+    scope = Column(String, nullable=True)
+    token_expires_at = Column(DateTime, nullable=True)
+    oauth_status = Column(String, default="NAO_CONECTADO", nullable=False)
+    conectado_em = Column(DateTime, nullable=True)
+    ultima_renovacao_em = Column(DateTime, nullable=True)
+    ambiente = Column(String, default="producao", nullable=False)
+    ativo = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+    barbearia = relationship("Barbearia")
+
+
+class MercadoPagoOAuthState(Base):
+    __tablename__ = "mercado_pago_oauth_states"
+
+    id = Column(Integer, primary_key=True, index=True)
+    state_hash = Column(String, nullable=False, unique=True, index=True)
+    barbearia_id = Column(Integer, ForeignKey("barbearias.id"), nullable=False, index=True)
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=False, index=True)
+    code_verifier_encrypted = Column(String, nullable=True)
+    criado_em = Column(DateTime, default=datetime.now, nullable=False)
+    expira_em = Column(DateTime, nullable=False, index=True)
+    utilizado_em = Column(DateTime, nullable=True)
+
+    barbearia = relationship("Barbearia")
+    usuario = relationship("Usuario")
+
+
+class MercadoPagoCobranca(Base):
+    __tablename__ = "mercado_pago_cobrancas"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_mp_cobranca_idempotency"),
+        UniqueConstraint("external_reference", name="uq_mp_cobranca_external_reference"),
+        UniqueConstraint("payment_id", name="uq_mp_cobranca_payment_id"),
+        UniqueConstraint("order_id", name="uq_mp_cobranca_order_id"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    barbearia_id = Column(Integer, ForeignKey("barbearias.id"), nullable=False, index=True)
+    # A cobrança pode nascer de Plano, Comanda ou Venda.
+    # assinatura_id é mantido por compatibilidade com o fluxo atual de planos.
+    assinatura_id = Column(Integer, ForeignKey("assinaturas_clientes.id"), nullable=True, index=True)
+    origem_negocio = Column(String, default="PLANO_CLIENTE", nullable=False, index=True)
+    origem_id = Column(Integer, nullable=True, index=True)
+    payment_id = Column(String, nullable=True, index=True)
+    order_id = Column(String, nullable=True, index=True)
+    idempotency_key = Column(String, nullable=False, index=True)
+    external_reference = Column(String, nullable=False, index=True)
+    valor = Column(Float, nullable=False)
+    tipo_pagamento = Column(String, default="PIX", nullable=False)
+    installments = Column(Integer, default=1, nullable=False)
+    valor_parcela = Column(Float, nullable=True)
+    payment_method_id = Column(String, nullable=True)
+    payment_type_id = Column(String, nullable=True)
+    status = Column(String, default="pending", nullable=False, index=True)
+    status_detail = Column(String, nullable=True)
+    payer_email = Column(String, nullable=True)
+    qr_code = Column(String, nullable=True)
+    qr_code_base64 = Column(String, nullable=True)
+    ticket_url = Column(String, nullable=True)
+    processado = Column(Boolean, default=False, nullable=False)
+    processado_em = Column(DateTime, nullable=True)
+    data_criacao = Column(DateTime, default=datetime.now, nullable=False)
+    data_atualizacao = Column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+    assinatura = relationship("AssinaturaCliente")
+    barbearia = relationship("Barbearia")
+
+
+# =========================
+# ASSINATURAS SAAS BARBSIST
+# =========================
+class PlanoSaaS(Base):
+    __tablename__ = "planos_saas"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nome = Column(String, nullable=False, unique=True, index=True)
+    descricao = Column(String, nullable=True)
+    periodo_meses = Column(Integer, nullable=False, default=1)
+    valor_pix = Column(Float, nullable=False)
+    valor_cartao = Column(Float, nullable=False)
+    max_parcelas_cartao = Column(Integer, nullable=False, default=1)
+    ativo = Column(Boolean, nullable=False, default=True)
+    data_criacao = Column(DateTime, nullable=False, default=datetime.now)
+    data_atualizacao = Column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
+
+
+class AssinaturaSaaS(Base):
+    __tablename__ = "assinaturas_saas"
+    __table_args__ = (
+        UniqueConstraint("barbearia_id", name="uq_assinatura_saas_barbearia"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    barbearia_id = Column(Integer, ForeignKey("barbearias.id", ondelete="RESTRICT"), nullable=False, index=True)
+    plano_id = Column(Integer, ForeignKey("planos_saas.id", ondelete="RESTRICT"), nullable=False, index=True)
+
+    status = Column(String, nullable=False, default="PENDENTE")
+    status_pagamento = Column(String, nullable=False, default="PENDENTE")
+    forma_pagamento = Column(String, nullable=True)
+
+    data_inicio = Column(DateTime, nullable=True)
+    data_fim = Column(DateTime, nullable=True)
+    data_proximo_vencimento = Column(DateTime, nullable=True)
+    liberado_manual = Column(Boolean, nullable=False, default=False)
+    motivo_bloqueio = Column(String, nullable=True)
+
+    criado_em = Column(DateTime, nullable=False, default=datetime.now)
+    atualizado_em = Column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
+
+    barbearia = relationship("Barbearia")
+    plano = relationship("PlanoSaaS")
+
+
+class PagamentoSaaS(Base):
+    __tablename__ = "pagamentos_saas"
+    __table_args__ = (
+        UniqueConstraint("payment_id", name="uq_pagamento_saas_payment_id"),
+        UniqueConstraint("external_reference", name="uq_pagamento_saas_external_reference"),
+        UniqueConstraint("idempotency_key", name="uq_pagamento_saas_idempotency_key"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    assinatura_id = Column(Integer, ForeignKey("assinaturas_saas.id", ondelete="RESTRICT"), nullable=False, index=True)
+    barbearia_id = Column(Integer, ForeignKey("barbearias.id", ondelete="RESTRICT"), nullable=False, index=True)
+    plano_id = Column(Integer, ForeignKey("planos_saas.id", ondelete="RESTRICT"), nullable=False, index=True)
+
+    payment_id = Column(String, nullable=True, index=True)
+    external_reference = Column(String, nullable=False, index=True)
+    idempotency_key = Column(String, nullable=False, index=True)
+
+    tipo_pagamento = Column(String, nullable=False)  # PIX | CARTAO | MANUAL
+    payment_method_id = Column(String, nullable=True)
+    payment_type_id = Column(String, nullable=True)
+    installments = Column(Integer, nullable=False, default=1)
+    valor = Column(Float, nullable=False)
+    valor_parcela = Column(Float, nullable=True)
+    payer_email = Column(String, nullable=True)
+
+    status = Column(String, nullable=False, default="pending")
+    status_detail = Column(String, nullable=True)
+    qr_code = Column(String, nullable=True)
+    qr_code_base64 = Column(String, nullable=True)
+    ticket_url = Column(String, nullable=True)
+
+    processado = Column(Boolean, nullable=False, default=False)
+    processado_em = Column(DateTime, nullable=True)
+    data_criacao = Column(DateTime, nullable=False, default=datetime.now)
+
+    assinatura = relationship("AssinaturaSaaS")
+    barbearia = relationship("Barbearia")
+    plano = relationship("PlanoSaaS")

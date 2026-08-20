@@ -8,8 +8,9 @@ from auth.tenant import (
     buscar_da_barbearia,
     consultar_da_barbearia,
     obter_barbearia_id,
-    validar_ids_da_barbearia
+    validar_ids_da_barbearia,
 )
+from services.caixa_service import registrar_entrada_caixa
 
 
 # =========================
@@ -28,70 +29,224 @@ PAGAMENTO_VENCIDO = "VENCIDO"
 PAGAMENTO_INADIMPLENTE = "INADIMPLENTE"
 PAGAMENTO_PENDENTE = "PENDENTE_PAGAMENTO"
 
+STATUS_ASSINATURA_BLOQUEANTES = {
+    STATUS_CANCELADO,
+    STATUS_INATIVO,
+    STATUS_SUSPENSO,
+    STATUS_ENCERRADO,
+}
+
+STATUS_ASSINATURA_EM_ABERTO = {
+    STATUS_ATIVO,
+    STATUS_VENCIDO,
+    STATUS_SUSPENSO,
+}
+
 
 # =========================
-# PLANOS
+# FUNÇÕES AUXILIARES
 # =========================
 
-from fastapi import HTTPException
+def _dados_parciais(dados):
+    if hasattr(dados, "model_dump"):
+        return dados.model_dump(exclude_unset=True)
 
-import models
+    return dados.dict(exclude_unset=True)
 
-from auth.tenant import (
-    buscar_da_barbearia,
-    consultar_da_barbearia,
-    obter_barbearia_id,
-    validar_ids_da_barbearia
-)
+
+def _normalizar_texto(valor):
+    if valor is None:
+        return None
+
+    if isinstance(valor, str):
+        return valor.strip()
+
+    return valor
+
+
+def validar_servicos_plano(
+    db,
+    servicos_ids,
+    usuario_logado,
+):
+    registros_servicos = validar_ids_da_barbearia(
+        db=db,
+        model=models.Servico,
+        registros_ids=servicos_ids or [],
+        usuario=usuario_logado,
+        mensagem_invalida=(
+            "Um ou mais serviços não foram encontrados "
+            "nesta barbearia."
+        ),
+    )
+
+    servicos_inativos = [
+        servico.id
+        for servico in registros_servicos
+        if hasattr(servico, "ativo") and not servico.ativo
+    ]
+
+    if servicos_inativos:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Um ou mais serviços informados estão inativos "
+                "nesta barbearia."
+            ),
+        )
+
+    return [servico.id for servico in registros_servicos]
 
 
 def criar_vinculos_servicos_plano(
     db,
     plano_id: int,
-    servicos_ids
+    servicos_ids,
 ):
     for servico_id in servicos_ids:
-        vinculo = models.PlanoServico(
-            plano_id=plano_id,
-            servico_id=servico_id
+        db.add(
+            models.PlanoServico(
+                plano_id=plano_id,
+                servico_id=servico_id,
+            )
         )
 
-        db.add(vinculo)
 
+def atualizar_status_assinatura(assinatura):
+    """Atualiza vigência sem inferir pagamento inexistente."""
+    agora = datetime.now()
+    status_atual = (assinatura.status or STATUS_PENDENTE).upper()
+    pagamento_atual = (assinatura.status_pagamento or PAGAMENTO_PENDENTE).upper()
+    assinatura.status = status_atual
+    assinatura.status_pagamento = pagamento_atual
+
+    if status_atual in STATUS_ASSINATURA_BLOQUEANTES:
+        return assinatura
+    if assinatura.data_proximo_vencimento is None:
+        if pagamento_atual != PAGAMENTO_PAGO:
+            assinatura.status = STATUS_PENDENTE
+            assinatura.status_pagamento = PAGAMENTO_PENDENTE
+        return assinatura
+
+    limite = assinatura.data_proximo_vencimento + timedelta(days=assinatura.dias_tolerancia or 0)
+    if agora <= assinatura.data_proximo_vencimento:
+        assinatura.status = STATUS_ATIVO if pagamento_atual == PAGAMENTO_PAGO else STATUS_PENDENTE
+    elif agora <= limite:
+        assinatura.status = STATUS_VENCIDO
+        if pagamento_atual != PAGAMENTO_PAGO:
+            assinatura.status_pagamento = PAGAMENTO_VENCIDO
+    else:
+        assinatura.status = STATUS_INATIVO
+        if pagamento_atual != PAGAMENTO_PAGO:
+            assinatura.status_pagamento = PAGAMENTO_INADIMPLENTE
+    return assinatura
+
+
+def _atualizar_status_em_lista(db, assinaturas):
+    houve_alteracao = False
+
+    for assinatura in assinaturas:
+        status_anterior = assinatura.status
+        pagamento_anterior = assinatura.status_pagamento
+
+        atualizar_status_assinatura(assinatura)
+
+        if (
+            assinatura.status != status_anterior
+            or assinatura.status_pagamento != pagamento_anterior
+        ):
+            houve_alteracao = True
+
+    if houve_alteracao:
+        db.commit()
+
+    return assinaturas
+
+
+def _aplicar_renovacao_assinatura(assinatura, plano, agora):
+    assinatura.data_ultimo_pagamento = agora
+    assinatura.data_proximo_vencimento = (
+        agora + timedelta(days=plano.validade_dias)
+    )
+    assinatura.data_fim = assinatura.data_proximo_vencimento
+    assinatura.usos_disponiveis = plano.quantidade_servicos
+    assinatura.valor_mensal = plano.valor
+    assinatura.status_pagamento = PAGAMENTO_PAGO
+    assinatura.status = STATUS_ATIVO
+
+
+def _registrar_historico_pagamento(
+    db,
+    assinatura,
+    plano,
+    forma_pagamento,
+    observacoes,
+    usuario_logado,
+):
+    agora = datetime.now()
+
+    registrar_entrada_caixa(
+        db=db,
+        descricao=(
+            f"Pagamento plano {plano.nome} "
+            f"- assinatura #{assinatura.id}"
+        ),
+        valor=plano.valor,
+        forma_pagamento=forma_pagamento,
+        barbearia_id=assinatura.barbearia_id,
+        origem="PLANO",
+        referencia_id=assinatura.id,
+        observacoes=observacoes,
+        usuario_id=usuario_logado.id,
+    )
+
+    historico_pagamento = models.PagamentoPlano(
+        assinatura_id=assinatura.id,
+        cliente_id=assinatura.cliente_id,
+        plano_id=assinatura.plano_id,
+        valor=plano.valor,
+        forma_pagamento=forma_pagamento,
+        status=PAGAMENTO_PAGO,
+        referencia_mes=agora.strftime("%Y-%m"),
+        observacoes=observacoes,
+    )
+
+    db.add(historico_pagamento)
+    return historico_pagamento
+
+
+# =========================
+# PLANOS
+# =========================
 
 def criar_plano_service(
     db,
     dados,
-    usuario_logado
+    usuario_logado,
 ):
     try:
-        barbearia_id = obter_barbearia_id(
-            usuario_logado
-        )
+        barbearia_id = obter_barbearia_id(usuario_logado)
+
+        nome = _normalizar_texto(dados.nome)
+        if not nome:
+            raise HTTPException(
+                status_code=400,
+                detail="O nome do plano é obrigatório.",
+            )
 
         servicos_ids = validar_servicos_plano(
             db=db,
             servicos_ids=dados.servicos_ids,
-            usuario_logado=usuario_logado
+            usuario_logado=usuario_logado,
         )
-
-        nome = dados.nome.strip()
-
-        if not nome:
-            raise HTTPException(
-                status_code=400,
-                detail="O nome do plano é obrigatório."
-            )
 
         plano_existente = (
             consultar_da_barbearia(
                 db=db,
                 model=models.Plano,
-                usuario=usuario_logado
+                usuario=usuario_logado,
             )
-            .filter(
-                models.Plano.nome == nome
-            )
+            .filter(models.Plano.nome == nome)
             .first()
         )
 
@@ -101,19 +256,20 @@ def criar_plano_service(
                 detail=(
                     "Já existe um plano com este nome "
                     "nesta barbearia."
-                )
+                ),
             )
 
         plano = models.Plano(
             nome=nome,
             descricao=dados.descricao,
             valor=dados.valor,
-            quantidade_servicos=(
-                dados.quantidade_servicos
-            ),
+            valor_pix=dados.valor_pix,
+            valor_cartao=dados.valor_cartao,
+            max_parcelas_cartao=max(1, min(int(dados.max_parcelas_cartao or 1), 12)),
+            quantidade_servicos=dados.quantidade_servicos,
             validade_dias=dados.validade_dias,
             ativo=True,
-            barbearia_id=barbearia_id
+            barbearia_id=barbearia_id,
         )
 
         db.add(plano)
@@ -122,71 +278,59 @@ def criar_plano_service(
         criar_vinculos_servicos_plano(
             db=db,
             plano_id=plano.id,
-            servicos_ids=servicos_ids
+            servicos_ids=servicos_ids,
         )
 
         db.commit()
         db.refresh(plano)
-
         return plano
 
     except HTTPException:
         db.rollback()
         raise
-
     except Exception as erro:
         db.rollback()
-
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Erro ao criar plano: "
-                f"{str(erro)}"
-            )
+            detail=f"Erro ao criar plano: {str(erro)}",
         )
 
 
 def listar_planos_service(
     db,
     usuario_logado,
-    apenas_ativos: bool = True
+    apenas_ativos: bool = True,
 ):
     query = consultar_da_barbearia(
         db=db,
         model=models.Plano,
-        usuario=usuario_logado
+        usuario=usuario_logado,
     )
 
     if apenas_ativos:
-        query = query.filter(
-            models.Plano.ativo.is_(True)
-        )
+        query = query.filter(models.Plano.ativo.is_(True))
 
-    return query.order_by(
-        models.Plano.nome.asc()
-    ).all()
+    return query.order_by(models.Plano.nome.asc()).all()
 
 
 def buscar_plano_service(
     db,
     plano_id: int,
     usuario_logado,
-    exigir_ativo: bool = True
+    exigir_ativo: bool = True,
 ):
     plano = buscar_da_barbearia(
         db=db,
         model=models.Plano,
         registro_id=plano_id,
         usuario=usuario_logado,
-        mensagem_nao_encontrado=(
-            "Plano não encontrado."
-        )
+        mensagem_nao_encontrado="Plano não encontrado.",
     )
 
     if exigir_ativo and not plano.ativo:
         raise HTTPException(
             status_code=404,
-            detail="Plano não encontrado ou inativo."
+            detail="Plano não encontrado ou inativo.",
         )
 
     return plano
@@ -195,330 +339,275 @@ def buscar_plano_service(
 def atualizar_plano_service(
     db,
     plano_id: int,
-    dados
+    dados,
+    usuario_logado,
 ):
     try:
-        plano = (
-            db.query(models.Plano)
+        plano = buscar_plano_service(
+            db=db,
+            plano_id=plano_id,
+            usuario_logado=usuario_logado,
+            exigir_ativo=False,
+        )
+
+        nome = _normalizar_texto(dados.nome)
+        if not nome:
+            raise HTTPException(
+                status_code=400,
+                detail="O nome do plano é obrigatório.",
+            )
+
+        plano_com_mesmo_nome = (
+            consultar_da_barbearia(
+                db=db,
+                model=models.Plano,
+                usuario=usuario_logado,
+            )
             .filter(
-                models.Plano.id == plano_id
+                models.Plano.nome == nome,
+                models.Plano.id != plano.id,
             )
             .first()
         )
 
-        if not plano:
+        if plano_com_mesmo_nome:
             raise HTTPException(
-                status_code=404,
-                detail="Plano não encontrado"
+                status_code=400,
+                detail=(
+                    "Já existe outro plano com este nome "
+                    "nesta barbearia."
+                ),
             )
 
         servicos_ids = validar_servicos_plano(
             db=db,
-            servicos_ids=dados.servicos_ids
+            servicos_ids=dados.servicos_ids,
+            usuario_logado=usuario_logado,
         )
 
-        plano.nome = dados.nome
+        plano.nome = nome
         plano.descricao = dados.descricao
         plano.valor = dados.valor
-        plano.quantidade_servicos = (
-            dados.quantidade_servicos
-        )
-        plano.validade_dias = (
-            dados.validade_dias
-        )
+        plano.valor_pix = dados.valor_pix
+        plano.valor_cartao = dados.valor_cartao
+        plano.max_parcelas_cartao = max(1, min(int(dados.max_parcelas_cartao or 1), 12))
+        plano.quantidade_servicos = dados.quantidade_servicos
+        plano.validade_dias = dados.validade_dias
         plano.ativo = dados.ativo
 
         (
             db.query(models.PlanoServico)
-            .filter(
-                models.PlanoServico.plano_id ==
-                plano.id
-            )
-            .delete(
-                synchronize_session=False
-            )
+            .filter(models.PlanoServico.plano_id == plano.id)
+            .delete(synchronize_session=False)
         )
 
         criar_vinculos_servicos_plano(
             db=db,
             plano_id=plano.id,
-            servicos_ids=servicos_ids
+            servicos_ids=servicos_ids,
         )
 
         db.commit()
         db.refresh(plano)
-
         return plano
 
     except HTTPException:
         db.rollback()
         raise
-
     except Exception as erro:
         db.rollback()
-
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Erro ao atualizar plano: "
-                f"{str(erro)}"
-            )
+            detail=f"Erro ao atualizar plano: {str(erro)}",
         )
+
 
 # =========================
 # ASSINATURAS
 # =========================
 
-def criar_assinatura_service(db, dados):
-    cliente = (
-        db.query(models.Cliente)
-        .filter(
-            models.Cliente.id == dados.cliente_id,
-            models.Cliente.ativo == True
+def criar_assinatura_service(
+    db,
+    dados,
+    usuario_logado,
+):
+    try:
+        barbearia_id = obter_barbearia_id(usuario_logado)
+
+        cliente = buscar_da_barbearia(
+            db=db,
+            model=models.Cliente,
+            registro_id=dados.cliente_id,
+            usuario=usuario_logado,
+            mensagem_nao_encontrado=(
+                "Cliente não encontrado ou inativo."
+            ),
         )
-        .first()
-    )
 
-    if not cliente:
-        raise HTTPException(
-            status_code=404,
-            detail="Cliente não encontrado ou inativo"
-        )
-
-    plano = buscar_plano_service(
-        db=db,
-        plano_id=dados.plano_id
-    )
-
-    assinatura_existente = (
-        db.query(models.AssinaturaCliente)
-        .filter(
-            models.AssinaturaCliente.cliente_id ==
-            dados.cliente_id,
-            models.AssinaturaCliente.status.in_([
-                STATUS_ATIVO,
-                STATUS_VENCIDO,
-                STATUS_SUSPENSO
-            ])
-        )
-        .first()
-    )
-
-    if assinatura_existente:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "O cliente já possui uma assinatura "
-                "ativa, vencida ou suspensa"
+        if not cliente.ativo:
+            raise HTTPException(
+                status_code=404,
+                detail="Cliente não encontrado ou inativo.",
             )
+
+        plano = buscar_plano_service(
+            db=db,
+            plano_id=dados.plano_id,
+            usuario_logado=usuario_logado,
+            exigir_ativo=True,
         )
 
-    agora = datetime.now()
-    data_fim = agora + timedelta(
-        days=plano.validade_dias
-    )
+        assinatura_existente = (
+            consultar_da_barbearia(
+                db=db,
+                model=models.AssinaturaCliente,
+                usuario=usuario_logado,
+            )
+            .filter(
+                models.AssinaturaCliente.cliente_id == cliente.id,
+                models.AssinaturaCliente.status.in_(
+                    STATUS_ASSINATURA_EM_ABERTO
+                ),
+            )
+            .first()
+        )
 
-    assinatura = models.AssinaturaCliente(
-        cliente_id=dados.cliente_id,
-        plano_id=dados.plano_id,
-        data_inicio=agora,
-        data_fim=data_fim,
-        data_ultimo_pagamento=agora,
-        data_proximo_vencimento=data_fim,
-        dias_tolerancia=5,
-        valor_mensal=plano.valor,
-        usos_disponiveis=plano.quantidade_servicos,
-        status=STATUS_ATIVO,
-        status_pagamento=PAGAMENTO_PAGO
-    )
+        if assinatura_existente:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "O cliente já possui uma assinatura "
+                    "ativa, vencida ou suspensa."
+                ),
+            )
 
-    db.add(assinatura)
-    db.commit()
-    db.refresh(assinatura)
+        agora = datetime.now()
+        data_fim = agora + timedelta(days=plano.validade_dias)
 
-    return assinatura
+        assinatura = models.AssinaturaCliente(
+            cliente_id=cliente.id,
+            plano_id=plano.id,
+            data_inicio=agora,
+            data_fim=data_fim,
+            data_ultimo_pagamento=None,
+            data_proximo_vencimento=None,
+            dias_tolerancia=5,
+            valor_mensal=plano.valor,
+            usos_disponiveis=0,
+            status=STATUS_PENDENTE,
+            status_pagamento=PAGAMENTO_PENDENTE,
+            barbearia_id=barbearia_id,
+        )
+
+        db.add(assinatura)
+        db.commit()
+        db.refresh(assinatura)
+        return assinatura
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as erro:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao criar assinatura: {str(erro)}",
+        )
 
 
-def listar_assinaturas_service(db):
+def listar_assinaturas_service(
+    db,
+    usuario_logado,
+):
     assinaturas = (
-        db.query(models.AssinaturaCliente)
-        .order_by(
-            models.AssinaturaCliente.id.desc()
+        consultar_da_barbearia(
+            db=db,
+            model=models.AssinaturaCliente,
+            usuario=usuario_logado,
         )
+        .order_by(models.AssinaturaCliente.id.desc())
         .all()
     )
 
-    houve_alteracao = False
-
-    for assinatura in assinaturas:
-        status_anterior = assinatura.status
-        pagamento_anterior = (
-            assinatura.status_pagamento
-        )
-
-        atualizar_status_assinatura(assinatura)
-
-        if (
-            assinatura.status != status_anterior
-            or assinatura.status_pagamento
-            != pagamento_anterior
-        ):
-            houve_alteracao = True
-
-    if houve_alteracao:
-        db.commit()
-
-    return assinaturas
+    return _atualizar_status_em_lista(db, assinaturas)
 
 
 def buscar_assinaturas_cliente_service(
     db,
-    cliente_id: int
+    cliente_id: int,
+    usuario_logado,
 ):
+    cliente = buscar_da_barbearia(
+        db=db,
+        model=models.Cliente,
+        registro_id=cliente_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado="Cliente não encontrado.",
+    )
+
     assinaturas = (
-        db.query(models.AssinaturaCliente)
-        .filter(
-            models.AssinaturaCliente.cliente_id ==
-            cliente_id
+        consultar_da_barbearia(
+            db=db,
+            model=models.AssinaturaCliente,
+            usuario=usuario_logado,
         )
-        .order_by(
-            models.AssinaturaCliente.id.desc()
-        )
+        .filter(models.AssinaturaCliente.cliente_id == cliente.id)
+        .order_by(models.AssinaturaCliente.id.desc())
         .all()
     )
 
-    houve_alteracao = False
-
-    for assinatura in assinaturas:
-        status_anterior = assinatura.status
-        pagamento_anterior = (
-            assinatura.status_pagamento
-        )
-
-        atualizar_status_assinatura(assinatura)
-
-        if (
-            assinatura.status != status_anterior
-            or assinatura.status_pagamento
-            != pagamento_anterior
-        ):
-            houve_alteracao = True
-
-    if houve_alteracao:
-        db.commit()
-
-    return assinaturas
+    return _atualizar_status_em_lista(db, assinaturas)
 
 
 def atualizar_assinatura_service(
     db,
     assinatura_id: int,
-    dados
+    dados,
+    usuario_logado,
 ):
-    assinatura = (
-        db.query(models.AssinaturaCliente)
-        .filter(
-            models.AssinaturaCliente.id ==
-            assinatura_id
+    try:
+        assinatura = buscar_da_barbearia(
+            db=db,
+            model=models.AssinaturaCliente,
+            registro_id=assinatura_id,
+            usuario=usuario_logado,
+            mensagem_nao_encontrado="Assinatura não encontrada.",
         )
-        .first()
-    )
 
-    if not assinatura:
+        campos = _dados_parciais(dados)
+
+        campos_protegidos = {
+            "id", "barbearia_id", "cliente_id", "plano_id",
+            "usos_disponiveis", "status_pagamento", "data_ultimo_pagamento",
+        }
+
+        for campo in campos_protegidos:
+            campos.pop(campo, None)
+
+        for campo, valor in campos.items():
+            setattr(assinatura, campo, valor)
+
+        if assinatura.status:
+            assinatura.status = assinatura.status.upper()
+
+        if assinatura.status_pagamento:
+            assinatura.status_pagamento = (
+                assinatura.status_pagamento.upper()
+            )
+
+        db.commit()
+        db.refresh(assinatura)
+        return assinatura
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as erro:
+        db.rollback()
         raise HTTPException(
-            status_code=404,
-            detail="Assinatura não encontrada"
+            status_code=500,
+            detail=f"Erro ao atualizar assinatura: {str(erro)}",
         )
-
-    if hasattr(dados, "model_dump"):
-        campos = dados.model_dump(
-            exclude_unset=True
-        )
-    else:
-        campos = dados.dict(
-            exclude_unset=True
-        )
-
-    for campo, valor in campos.items():
-        setattr(assinatura, campo, valor)
-
-    if assinatura.status:
-        assinatura.status = (
-            assinatura.status.upper()
-        )
-
-    if assinatura.status_pagamento:
-        assinatura.status_pagamento = (
-            assinatura.status_pagamento.upper()
-        )
-
-    db.commit()
-    db.refresh(assinatura)
-
-    return assinatura
-
-
-# =========================
-# STATUS DA ASSINATURA
-# =========================
-
-def atualizar_status_assinatura(assinatura):
-    agora = datetime.now()
-
-    status_atual = (
-        assinatura.status or ""
-    ).upper()
-
-    pagamento_atual = (
-        assinatura.status_pagamento or ""
-    ).upper()
-
-    assinatura.status = status_atual
-    assinatura.status_pagamento = pagamento_atual
-
-    if status_atual in [
-        STATUS_CANCELADO,
-        STATUS_INATIVO,
-        STATUS_SUSPENSO,
-        STATUS_ENCERRADO
-    ]:
-        return assinatura
-
-    if assinatura.data_proximo_vencimento is None:
-        assinatura.status_pagamento = (
-            PAGAMENTO_PENDENTE
-        )
-
-        return assinatura
-
-    dias_tolerancia = (
-        assinatura.dias_tolerancia or 0
-    )
-
-    limite_tolerancia = (
-        assinatura.data_proximo_vencimento
-        + timedelta(days=dias_tolerancia)
-    )
-
-    if agora <= assinatura.data_proximo_vencimento:
-        assinatura.status = STATUS_ATIVO
-        assinatura.status_pagamento = (
-            PAGAMENTO_PAGO
-        )
-
-    elif agora <= limite_tolerancia:
-        assinatura.status = STATUS_VENCIDO
-        assinatura.status_pagamento = (
-            PAGAMENTO_VENCIDO
-        )
-
-    else:
-        assinatura.status = STATUS_INATIVO
-        assinatura.status_pagamento = (
-            PAGAMENTO_INADIMPLENTE
-        )
-
-    return assinatura
 
 
 # =========================
@@ -529,7 +618,7 @@ def usar_plano_service(
     db,
     dados,
     usuario_logado,
-    realizar_commit: bool = True
+    realizar_commit: bool = True,
 ):
     try:
         assinatura = buscar_da_barbearia(
@@ -537,9 +626,7 @@ def usar_plano_service(
             model=models.AssinaturaCliente,
             registro_id=dados.assinatura_id,
             usuario=usuario_logado,
-            mensagem_nao_encontrado=(
-                "Assinatura não encontrada."
-            )
+            mensagem_nao_encontrado="Assinatura não encontrada.",
         )
 
         comanda = buscar_da_barbearia(
@@ -547,83 +634,53 @@ def usar_plano_service(
             model=models.Comanda,
             registro_id=dados.comanda_id,
             usuario=usuario_logado,
-            mensagem_nao_encontrado=(
-                "Comanda não encontrada."
-            )
+            mensagem_nao_encontrado="Comanda não encontrada.",
         )
 
-        if (
-            comanda.barbearia_id
-            != assinatura.barbearia_id
-        ):
+        if comanda.barbearia_id != assinatura.barbearia_id:
             raise HTTPException(
                 status_code=404,
-                detail=(
-                    "Comanda ou assinatura "
-                    "não encontrada."
-                )
+                detail="Comanda ou assinatura não encontrada.",
             )
 
-        if (
-            comanda.cliente_id
-            != assinatura.cliente_id
-        ):
+        if comanda.cliente_id != assinatura.cliente_id:
             raise HTTPException(
                 status_code=400,
                 detail=(
                     "A assinatura informada não pertence "
                     "ao cliente desta comanda."
-                )
+                ),
             )
 
-        status_comanda = (
-            comanda.status or ""
-        ).upper()
-
+        status_comanda = (comanda.status or "").upper()
         if status_comanda != "ABERTA":
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Não é possível utilizar o plano "
-                    "em uma comanda que não esteja aberta. "
+                    "Não é possível utilizar o plano em uma "
+                    "comanda que não esteja aberta. "
                     f"Status atual: {status_comanda}"
-                )
+                ),
             )
 
-        atualizar_status_assinatura(
-            assinatura
-        )
+        atualizar_status_assinatura(assinatura)
 
         if assinatura.status != STATUS_ATIVO:
-            if realizar_commit:
-                db.commit()
-            else:
-                db.flush()
-
             raise HTTPException(
                 status_code=400,
                 detail=(
                     "Assinatura indisponível para uso. "
                     f"Status atual: {assinatura.status}"
-                )
+                ),
             )
 
-        if (
-            assinatura.status_pagamento
-            != PAGAMENTO_PAGO
-        ):
-            if realizar_commit:
-                db.commit()
-            else:
-                db.flush()
-
+        if assinatura.status_pagamento != PAGAMENTO_PAGO:
             raise HTTPException(
                 status_code=400,
                 detail=(
                     "Pagamento do plano não está regular. "
-                    "Status atual: "
-                    f"{assinatura.status_pagamento}"
-                )
+                    f"Status atual: {assinatura.status_pagamento}"
+                ),
             )
 
         servico = buscar_da_barbearia(
@@ -633,33 +690,25 @@ def usar_plano_service(
             usuario=usuario_logado,
             mensagem_nao_encontrado=(
                 "Serviço não encontrado ou inativo."
-            )
+            ),
         )
 
         if not servico.ativo:
             raise HTTPException(
                 status_code=404,
-                detail=(
-                    "Serviço não encontrado ou inativo."
-                )
+                detail="Serviço não encontrado ou inativo.",
             )
 
         uso_existente = (
             db.query(models.UsoPlano)
             .join(
                 models.Comanda,
-                models.Comanda.id
-                == models.UsoPlano.comanda_id
+                models.Comanda.id == models.UsoPlano.comanda_id,
             )
             .filter(
-                models.UsoPlano.comanda_id
-                == comanda.id,
-
-                models.UsoPlano.servico_id
-                == servico.id,
-
-                models.Comanda.barbearia_id
-                == comanda.barbearia_id
+                models.UsoPlano.comanda_id == comanda.id,
+                models.UsoPlano.servico_id == servico.id,
+                models.Comanda.barbearia_id == comanda.barbearia_id,
             )
             .first()
         )
@@ -668,27 +717,21 @@ def usar_plano_service(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Este serviço já foi registrado "
-                    "como pago pelo plano nesta comanda."
-                )
+                    "Este serviço já foi registrado como pago "
+                    "pelo plano nesta comanda."
+                ),
             )
 
         servico_permitido = (
             db.query(models.PlanoServico)
             .join(
                 models.Plano,
-                models.Plano.id
-                == models.PlanoServico.plano_id
+                models.Plano.id == models.PlanoServico.plano_id,
             )
             .filter(
-                models.PlanoServico.plano_id
-                == assinatura.plano_id,
-
-                models.PlanoServico.servico_id
-                == servico.id,
-
-                models.Plano.barbearia_id
-                == assinatura.barbearia_id
+                models.PlanoServico.plano_id == assinatura.plano_id,
+                models.PlanoServico.servico_id == servico.id,
+                models.Plano.barbearia_id == assinatura.barbearia_id,
             )
             .first()
         )
@@ -696,10 +739,7 @@ def usar_plano_service(
         if not servico_permitido:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "Este serviço não está incluído "
-                    "no plano do cliente."
-                )
+                detail="Este serviço não está incluído no plano do cliente.",
             )
 
         if assinatura.usos_disponiveis is None:
@@ -708,17 +748,16 @@ def usar_plano_service(
         if assinatura.usos_disponiveis <= 0:
             raise HTTPException(
                 status_code=400,
-                detail="Sem usos disponíveis no plano."
+                detail="Sem usos disponíveis no plano.",
             )
 
         uso = models.UsoPlano(
             assinatura_id=assinatura.id,
             comanda_id=comanda.id,
-            servico_id=servico.id
+            servico_id=servico.id,
         )
 
         assinatura.usos_disponiveis -= 1
-
         db.add(uso)
         db.flush()
         db.refresh(uso)
@@ -732,149 +771,74 @@ def usar_plano_service(
     except HTTPException:
         if realizar_commit:
             db.rollback()
-
         raise
-
     except Exception as erro:
         if realizar_commit:
             db.rollback()
-
         raise HTTPException(
             status_code=500,
-            detail=(
-                "Erro ao utilizar o plano: "
-                f"{str(erro)}"
-            )
+            detail=f"Erro ao utilizar o plano: {str(erro)}",
         )
+
 
 # =========================
 # PAGAMENTOS DE PLANOS
 # =========================
 
-def registrar_pagamento_plano_service(
-    db,
-    dados,
-    usuario_logado
-):
-    assinatura = buscar_da_barbearia(
-        db=db,
-        model=models.AssinaturaCliente,
-        registro_id=dados.assinatura_id,
-        usuario=usuario_logado,
-        mensagem_nao_encontrado=(
-            "Assinatura não encontrada."
+def registrar_pagamento_plano_service(db, dados, usuario_logado):
+    try:
+        assinatura = buscar_da_barbearia(db=db, model=models.AssinaturaCliente, registro_id=dados.assinatura_id, usuario=usuario_logado, mensagem_nao_encontrado="Assinatura não encontrada.")
+        plano = buscar_plano_service(db=db, plano_id=assinatura.plano_id, usuario_logado=usuario_logado, exigir_ativo=True)
+        return confirmar_pagamento_assinatura_service(
+            db=db, assinatura=assinatura, plano=plano, forma_pagamento=(dados.forma_pagamento or "PIX").upper(),
+            observacoes="Pagamento manual confirmado no BarbSist", usuario_id=getattr(usuario_logado, "id", None),
         )
-    )
-
-    plano = buscar_plano_service(
-        db=db,
-        plano_id=assinatura.plano_id,
-        usuario_logado=usuario_logado,
-        exigir_ativo=True
-    )
-
-    agora = datetime.now()
-
-    assinatura.data_ultimo_pagamento = agora
-    assinatura.data_proximo_vencimento = (
-        agora
-        + timedelta(
-            days=plano.validade_dias
-        )
-    )
-    assinatura.data_fim = (
-        assinatura.data_proximo_vencimento
-    )
-    assinatura.usos_disponiveis = (
-        plano.quantidade_servicos
-    )
-    assinatura.valor_mensal = plano.valor
-    assinatura.status_pagamento = PAGAMENTO_PAGO
-    assinatura.status = STATUS_ATIVO
-
-    movimentacao = models.Caixa(
-        tipo="entrada",
-        descricao=(
-            f"Pagamento plano {plano.nome} "
-            f"- assinatura #{assinatura.id}"
-        ),
-        valor=plano.valor,
-        forma_pagamento=dados.forma_pagamento
-    )
-
-    historico_pagamento = models.PagamentoPlano(
-        assinatura_id=assinatura.id,
-        cliente_id=assinatura.cliente_id,
-        plano_id=assinatura.plano_id,
-        valor=plano.valor,
-        forma_pagamento=dados.forma_pagamento,
-        status=PAGAMENTO_PAGO,
-        referencia_mes=agora.strftime("%Y-%m"),
-        observacoes="Pagamento mensal do plano"
-    )
-
-    db.add(movimentacao)
-    db.add(historico_pagamento)
-
-    db.commit()
-    db.refresh(assinatura)
-
-    return assinatura
+    except HTTPException:
+        db.rollback(); raise
+    except Exception as erro:
+        db.rollback(); raise HTTPException(status_code=500, detail=f"Erro ao registrar pagamento do plano: {str(erro)}")
 
 
 def listar_pagamentos_planos_service(
     db,
-    usuario_logado
+    usuario_logado,
 ):
-    barbearia_id = obter_barbearia_id(
-        usuario_logado
-    )
+    barbearia_id = obter_barbearia_id(usuario_logado)
 
     return (
         db.query(models.PagamentoPlano)
         .join(
             models.AssinaturaCliente,
             models.AssinaturaCliente.id
-            == models.PagamentoPlano.assinatura_id
+            == models.PagamentoPlano.assinatura_id,
         )
         .filter(
-            models.AssinaturaCliente.barbearia_id
-            == barbearia_id
+            models.AssinaturaCliente.barbearia_id == barbearia_id
         )
-        .order_by(
-            models.PagamentoPlano
-            .data_pagamento
-            .desc()
-        )
+        .order_by(models.PagamentoPlano.data_pagamento.desc())
         .all()
     )
+
 
 def listar_pagamentos_assinatura_service(
     db,
     assinatura_id: int,
-    usuario_logado
+    usuario_logado,
 ):
     assinatura = buscar_da_barbearia(
         db=db,
         model=models.AssinaturaCliente,
         registro_id=assinatura_id,
         usuario=usuario_logado,
-        mensagem_nao_encontrado=(
-            "Assinatura não encontrada."
-        )
+        mensagem_nao_encontrado="Assinatura não encontrada.",
     )
 
     return (
         db.query(models.PagamentoPlano)
         .filter(
-            models.PagamentoPlano.assinatura_id
-            == assinatura.id
+            models.PagamentoPlano.assinatura_id == assinatura.id
         )
-        .order_by(
-            models.PagamentoPlano
-            .data_pagamento
-            .desc()
-        )
+        .order_by(models.PagamentoPlano.data_pagamento.desc())
         .all()
     )
 
@@ -882,41 +846,30 @@ def listar_pagamentos_assinatura_service(
 def listar_pagamentos_cliente_service(
     db,
     cliente_id: int,
-    usuario_logado
+    usuario_logado,
 ):
     cliente = buscar_da_barbearia(
         db=db,
         model=models.Cliente,
         registro_id=cliente_id,
         usuario=usuario_logado,
-        mensagem_nao_encontrado=(
-            "Cliente não encontrado."
-        )
+        mensagem_nao_encontrado="Cliente não encontrado.",
     )
 
-    barbearia_id = obter_barbearia_id(
-        usuario_logado
-    )
+    barbearia_id = obter_barbearia_id(usuario_logado)
 
     return (
         db.query(models.PagamentoPlano)
         .join(
             models.AssinaturaCliente,
             models.AssinaturaCliente.id
-            == models.PagamentoPlano.assinatura_id
+            == models.PagamentoPlano.assinatura_id,
         )
         .filter(
-            models.PagamentoPlano.cliente_id
-            == cliente.id,
-
-            models.AssinaturaCliente.barbearia_id
-            == barbearia_id
+            models.PagamentoPlano.cliente_id == cliente.id,
+            models.AssinaturaCliente.barbearia_id == barbearia_id,
         )
-        .order_by(
-            models.PagamentoPlano
-            .data_pagamento
-            .desc()
-        )
+        .order_by(models.PagamentoPlano.data_pagamento.desc())
         .all()
     )
 
@@ -925,81 +878,18 @@ def listar_pagamentos_cliente_service(
 # RENOVAÇÃO DE ASSINATURA
 # =========================
 
-def renovar_assinatura_service(
-    db,
-    assinatura_id: int,
-    dados,
-    usuario_logado
-):
-    assinatura = buscar_da_barbearia(
-        db=db,
-        model=models.AssinaturaCliente,
-        registro_id=assinatura_id,
-        usuario=usuario_logado,
-        mensagem_nao_encontrado=(
-            "Assinatura não encontrada."
+def renovar_assinatura_service(db, assinatura_id: int, dados, usuario_logado):
+    try:
+        assinatura = buscar_da_barbearia(db=db, model=models.AssinaturaCliente, registro_id=assinatura_id, usuario=usuario_logado, mensagem_nao_encontrado="Assinatura não encontrada.")
+        plano = buscar_plano_service(db=db, plano_id=assinatura.plano_id, usuario_logado=usuario_logado, exigir_ativo=True)
+        return confirmar_pagamento_assinatura_service(
+            db=db, assinatura=assinatura, plano=plano, forma_pagamento=(dados.forma_pagamento or "PIX").upper(),
+            observacoes=getattr(dados, "observacoes", None) or "Renovação manual do plano", usuario_id=getattr(usuario_logado, "id", None),
         )
-    )
-
-    plano = buscar_plano_service(
-        db=db,
-        plano_id=assinatura.plano_id,
-        usuario_logado=usuario_logado,
-        exigir_ativo=True
-    )
-
-    agora = datetime.now()
-
-    assinatura.data_ultimo_pagamento = agora
-    assinatura.data_proximo_vencimento = (
-        agora
-        + timedelta(
-            days=plano.validade_dias
-        )
-    )
-    assinatura.data_fim = (
-        assinatura.data_proximo_vencimento
-    )
-    assinatura.usos_disponiveis = (
-        plano.quantidade_servicos
-    )
-    assinatura.valor_mensal = plano.valor
-    assinatura.status_pagamento = PAGAMENTO_PAGO
-    assinatura.status = STATUS_ATIVO
-
-    movimentacao = models.Caixa(
-        tipo="entrada",
-        descricao=(
-            f"Renovação plano {plano.nome} "
-            f"- assinatura #{assinatura.id}"
-        ),
-        valor=plano.valor,
-        forma_pagamento=dados.forma_pagamento
-    )
-
-    observacoes = (
-        dados.observacoes
-        or "Renovação mensal do plano"
-    )
-
-    historico_pagamento = models.PagamentoPlano(
-        assinatura_id=assinatura.id,
-        cliente_id=assinatura.cliente_id,
-        plano_id=assinatura.plano_id,
-        valor=plano.valor,
-        forma_pagamento=dados.forma_pagamento,
-        status=PAGAMENTO_PAGO,
-        referencia_mes=agora.strftime("%Y-%m"),
-        observacoes=observacoes
-    )
-
-    db.add(movimentacao)
-    db.add(historico_pagamento)
-
-    db.commit()
-    db.refresh(assinatura)
-
-    return assinatura
+    except HTTPException:
+        db.rollback(); raise
+    except Exception as erro:
+        db.rollback(); raise HTTPException(status_code=500, detail=f"Erro ao renovar assinatura: {str(erro)}")
 
 
 # =========================
@@ -1010,78 +900,88 @@ def suspender_assinatura_service(
     db,
     assinatura_id: int,
     dados,
-    usuario_logado
+    usuario_logado,
 ):
-    assinatura = buscar_da_barbearia(
-        db=db,
-        model=models.AssinaturaCliente,
-        registro_id=assinatura_id,
-        usuario=usuario_logado,
-        mensagem_nao_encontrado=(
-            "Assinatura não encontrada."
+    try:
+        assinatura = buscar_da_barbearia(
+            db=db,
+            model=models.AssinaturaCliente,
+            registro_id=assinatura_id,
+            usuario=usuario_logado,
+            mensagem_nao_encontrado="Assinatura não encontrada.",
         )
-    )
 
-    if assinatura.status == STATUS_SUSPENSO:
+        if assinatura.status == STATUS_SUSPENSO:
+            raise HTTPException(
+                status_code=400,
+                detail="Assinatura já está suspensa.",
+            )
+
+        assinatura.status = STATUS_SUSPENSO
+
+        db.commit()
+        db.refresh(assinatura)
+        return assinatura
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as erro:
+        db.rollback()
         raise HTTPException(
-            status_code=400,
-            detail="Assinatura já está suspensa."
+            status_code=500,
+            detail=f"Erro ao suspender assinatura: {str(erro)}",
         )
-
-    assinatura.status = STATUS_SUSPENSO
-    assinatura.status_pagamento = (
-        PAGAMENTO_PENDENTE
-    )
-
-    db.commit()
-    db.refresh(assinatura)
-
-    return assinatura
 
 
 def reativar_assinatura_service(
     db,
     assinatura_id: int,
     dados,
-    usuario_logado
+    usuario_logado,
 ):
-    assinatura = buscar_da_barbearia(
-        db=db,
-        model=models.AssinaturaCliente,
-        registro_id=assinatura_id,
-        usuario=usuario_logado,
-        mensagem_nao_encontrado=(
-            "Assinatura não encontrada."
-        )
-    )
-
-    if dados.forma_pagamento:
-        return renovar_assinatura_service(
+    try:
+        assinatura = buscar_da_barbearia(
             db=db,
-            assinatura_id=assinatura.id,
-            dados=dados,
-            usuario_logado=usuario_logado
+            model=models.AssinaturaCliente,
+            registro_id=assinatura_id,
+            usuario=usuario_logado,
+            mensagem_nao_encontrado="Assinatura não encontrada.",
         )
 
-    assinatura.status = STATUS_ATIVO
-
-    atualizar_status_assinatura(
-        assinatura
-    )
-
-    if assinatura.status != STATUS_ATIVO:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Não foi possível reativar a assinatura "
-                "sem regularizar o pagamento."
+        if getattr(dados, "forma_pagamento", None):
+            return renovar_assinatura_service(
+                db=db,
+                assinatura_id=assinatura.id,
+                dados=dados,
+                usuario_logado=usuario_logado,
             )
+
+        assinatura.status = STATUS_ATIVO
+        atualizar_status_assinatura(assinatura)
+
+        if assinatura.status != STATUS_ATIVO:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Não foi possível reativar a assinatura "
+                    "sem regularizar o pagamento."
+                ),
+            )
+
+        db.commit()
+        db.refresh(assinatura)
+        return assinatura
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as erro:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao reativar assinatura: {str(erro)}",
         )
-
-    db.commit()
-    db.refresh(assinatura)
-
-    return assinatura
 
 
 # =========================
@@ -1090,28 +990,70 @@ def reativar_assinatura_service(
 
 def verificar_inadimplencia_service(
     db,
-    usuario_logado
+    usuario_logado,
 ):
-    assinaturas = (
-        consultar_da_barbearia(
-            db=db,
-            model=models.AssinaturaCliente,
-            usuario=usuario_logado
+    try:
+        assinaturas = (
+            consultar_da_barbearia(
+                db=db,
+                model=models.AssinaturaCliente,
+                usuario=usuario_logado,
+            )
+            .filter(
+                models.AssinaturaCliente.status.in_(
+                    [STATUS_ATIVO, STATUS_VENCIDO]
+                )
+            )
+            .all()
         )
-        .filter(
-            models.AssinaturaCliente.status.in_([
-                STATUS_ATIVO,
-                STATUS_VENCIDO
-            ])
+
+        for assinatura in assinaturas:
+            atualizar_status_assinatura(assinatura)
+
+        db.commit()
+        return assinaturas
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as erro:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao verificar inadimplência: {str(erro)}",
         )
-        .all()
+
+
+def _referencia_mes(atual=None):
+    return (atual or datetime.now()).strftime("%Y-%m")
+
+
+def _validar_pagamento_nao_duplicado(db, assinatura_id: int, referencia_mes: str):
+    existente = db.query(models.PagamentoPlano).filter(
+        models.PagamentoPlano.assinatura_id == assinatura_id,
+        models.PagamentoPlano.referencia_mes == referencia_mes,
+        models.PagamentoPlano.status == PAGAMENTO_PAGO,
+    ).first()
+    if existente:
+        raise HTTPException(status_code=409, detail=f"Já existe pagamento confirmado para esta assinatura na referência {referencia_mes}.")
+
+
+def confirmar_pagamento_assinatura_service(db, assinatura, plano, forma_pagamento: str, observacoes: str | None = None, usuario_id: int | None = None, referencia_mes: str | None = None, realizar_commit: bool = True, valor_pagamento: float | None = None):
+    agora = datetime.now()
+    referencia = referencia_mes or _referencia_mes(agora)
+    _validar_pagamento_nao_duplicado(db, assinatura.id, referencia)
+    _aplicar_renovacao_assinatura(assinatura, plano, agora)
+    valor_recebido = float(valor_pagamento if valor_pagamento is not None else plano.valor)
+    registrar_entrada_caixa(
+        db=db, descricao=f"Pagamento plano {plano.nome} - assinatura #{assinatura.id}",
+        valor=valor_recebido, forma_pagamento=forma_pagamento, barbearia_id=assinatura.barbearia_id,
+        origem="PLANO", referencia_id=assinatura.id, observacoes=observacoes, usuario_id=usuario_id,
     )
-
-    for assinatura in assinaturas:
-        atualizar_status_assinatura(
-            assinatura
-        )
-
-    db.commit()
-
-    return assinaturas
+    db.add(models.PagamentoPlano(
+        assinatura_id=assinatura.id, cliente_id=assinatura.cliente_id, plano_id=assinatura.plano_id,
+        valor=valor_recebido, forma_pagamento=forma_pagamento, status=PAGAMENTO_PAGO,
+        referencia_mes=referencia, observacoes=observacoes,
+    ))
+    if realizar_commit:
+        db.commit(); db.refresh(assinatura)
+    return assinatura

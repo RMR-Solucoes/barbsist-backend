@@ -2,157 +2,61 @@ import os
 
 from database import SessionLocal
 from auth.security import criar_hash_senha
-from sqlalchemy import func
 import models
 
-
-EMAIL = os.getenv(
-    "BOOTSTRAP_SUPERADMIN_EMAIL",
-    "",
-).strip().lower()
-
-SENHA = os.getenv(
-    "BOOTSTRAP_SUPERADMIN_PASSWORD",
-    "",
-)
-
-NOME = os.getenv(
-    "BOOTSTRAP_SUPERADMIN_NAME",
-    "MaxBarbSist",
-).strip()
-
-BARBEARIA_NOME = os.getenv(
-    "BOOTSTRAP_BARBEARIA_NOME",
-    "Barbearia do Mario",
-).strip()
-
-BARBEARIA_SLUG = os.getenv(
-    "BOOTSTRAP_BARBEARIA_SLUG",
-    "barbearia-do-mario",
-).strip().lower()
+EMAIL = os.getenv("BOOTSTRAP_SUPERADMIN_EMAIL", "").strip().lower()
+SENHA = os.getenv("BOOTSTRAP_SUPERADMIN_PASSWORD", "")
+NOME = os.getenv("BOOTSTRAP_SUPERADMIN_NAME", "MaxBarbSist").strip()
 
 
 def validar_variaveis():
     if not EMAIL:
-        raise RuntimeError(
-            "BOOTSTRAP_SUPERADMIN_EMAIL não configurado."
-        )
-
+        raise RuntimeError("BOOTSTRAP_SUPERADMIN_EMAIL não configurado.")
     if len(SENHA) < 12:
-        raise RuntimeError(
-            "BOOTSTRAP_SUPERADMIN_PASSWORD deve ter "
-            "pelo menos 12 caracteres."
-        )
-
+        raise RuntimeError("BOOTSTRAP_SUPERADMIN_PASSWORD deve ter pelo menos 12 caracteres.")
     if not NOME:
-        raise RuntimeError(
-            "BOOTSTRAP_SUPERADMIN_NAME não configurado."
-        )
-
-    if not BARBEARIA_NOME or not BARBEARIA_SLUG:
-        raise RuntimeError(
-            "Nome ou slug da barbearia não configurado."
-        )
+        raise RuntimeError("BOOTSTRAP_SUPERADMIN_NAME não configurado.")
 
 
 def executar():
     validar_variaveis()
-
     db = SessionLocal()
-
     try:
-        barbearia = (
-            db.query(models.Barbearia)
-            .filter(
-                models.Barbearia.slug
-                == BARBEARIA_SLUG
-            )
-            .first()
-        )
-
-        if not barbearia:
-            ultimo_codigo = (
-                db.query(
-                    func.max(models.Barbearia.codigo)
-                )
-                .scalar()
-                or 0
-            )
-
-            barbearia = models.Barbearia(
-                codigo=ultimo_codigo + 1,
-                nome=BARBEARIA_NOME,
-                slug=BARBEARIA_SLUG,
-                responsavel="Administrador BarbSist",
-                email=EMAIL,
-                ativa=True,
-            )
-
-            db.add(barbearia)
-            db.flush()
-
-            print(
-                "[OK] Barbearia inicial criada."
-            )
-
         usuario = (
             db.query(models.Usuario)
-            .filter(
-                models.Usuario.email == EMAIL
-            )
+            .filter(models.Usuario.email == EMAIL)
             .first()
         )
 
         if usuario:
             usuario.nome = NOME
-            usuario.senha_hash = (
-                criar_hash_senha(SENHA)
-            )
+            usuario.senha_hash = criar_hash_senha(SENHA)
             usuario.perfil = "superadmin"
             usuario.barbeiro_id = None
             usuario.ativo = True
-            usuario.barbearia_id = barbearia.id
-
-            print(
-                "[OK] Superadmin atualizado."
-            )
-
+            usuario.barbearia_id = None
+            print("[OK] Superadmin global atualizado.")
         else:
             usuario = models.Usuario(
                 nome=NOME,
                 email=EMAIL,
-                senha_hash=(
-                    criar_hash_senha(SENHA)
-                ),
+                senha_hash=criar_hash_senha(SENHA),
                 perfil="superadmin",
                 barbeiro_id=None,
                 ativo=True,
-                barbearia_id=barbearia.id,
+                barbearia_id=None,
             )
-
             db.add(usuario)
-
-            print(
-                "[OK] Superadmin criado."
-            )
+            print("[OK] Superadmin global criado.")
 
         db.commit()
         db.refresh(usuario)
-
-        print(
-            f"[OK] ID do superadmin: {usuario.id}"
-        )
-        print(
-            f"[OK] Barbearia: {barbearia.slug}"
-        )
-        print(
-            f"[OK] E-mail: {usuario.email}"
-        )
-
+        print(f"[OK] ID do superadmin: {usuario.id}")
+        print(f"[OK] E-mail: {usuario.email}")
+        print("[OK] barbearia_id: NULL (controle global do BarbSist)")
     except Exception:
         db.rollback()
         raise
-
     finally:
         db.close()
 

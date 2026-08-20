@@ -26,7 +26,9 @@ from schemas import (
 from services.comanda_service import (
     fechar_comanda_service,
     obter_assinatura_disponivel_comanda_service,
-    usar_plano_em_item_comanda_service
+    usar_plano_em_item_comanda_service,
+    remover_item_comanda_service,
+    cancelar_comanda_service
 )
 
 from services.estoque_service import (
@@ -485,3 +487,11 @@ def fechar_comanda(
         forma_pagamento=dados.forma_pagamento,
         usuario_logado=usuario_logado
     )
+
+@router.delete("/{comanda_id}/itens/{item_id}")
+def remover_item_comanda(comanda_id: int, item_id: int, db: Session = Depends(get_db), usuario_logado=Depends(admin_gerente_recepcao_ou_barbeiro)):
+    return remover_item_comanda_service(db, comanda_id, item_id, usuario_logado)
+
+@router.put("/{comanda_id}/cancelar")
+def cancelar_comanda(comanda_id: int, db: Session = Depends(get_db), usuario_logado=Depends(admin_gerente_recepcao_ou_barbeiro)):
+    return cancelar_comanda_service(db, comanda_id, usuario_logado)

@@ -202,96 +202,80 @@ def alterar_minha_senha_service(
 
 
 def solicitar_recuperacao_senha_service(
-    barbearia_slug: str,
+    barbearia_slug: str | None,
     email: str,
     db: Session,
 ):
     """
-    Cria um token temporário para recuperação de senha.
-
-    A resposta pública é sempre genérica para não revelar
-    se a barbearia ou o usuário existem.
+    Cria token temporário para usuário de barbearia ou superadmin global.
+    A resposta pública permanece genérica para evitar enumeração de contas.
     """
+    slug_normalizado = (barbearia_slug or "").strip().lower()
+    email_normalizado = (email or "").strip().lower()
 
-    slug_normalizado = (
-        barbearia_slug.strip().lower()
-        if barbearia_slug
-        else ""
+    # Superadmin global: recuperação não depende de slug.
+    usuario = (
+        db.query(models.Usuario)
+        .filter(
+            models.Usuario.email == email_normalizado,
+            models.Usuario.perfil == "superadmin",
+            models.Usuario.ativo.is_(True),
+        )
+        .first()
     )
-
-    email_normalizado = (
-        email.strip().lower()
-        if email
-        else ""
-    )
-
-    barbearia = db.query(
-        models.Barbearia
-    ).filter(
-        models.Barbearia.slug == slug_normalizado,
-        models.Barbearia.ativa.is_(True),
-    ).first()
-
-    if barbearia is None:
-        return {
-            "mensagem": MENSAGEM_RECUPERACAO
-        }
-
-    usuario = db.query(
-        models.Usuario
-    ).filter(
-        models.Usuario.barbearia_id == barbearia.id,
-        models.Usuario.email == email_normalizado,
-        models.Usuario.ativo.is_(True),
-    ).first()
+    barbearia_id = None
 
     if usuario is None:
-        return {
-            "mensagem": MENSAGEM_RECUPERACAO
-        }
+        if not slug_normalizado:
+            return {"mensagem": MENSAGEM_RECUPERACAO}
+
+        barbearia = (
+            db.query(models.Barbearia)
+            .filter(
+                models.Barbearia.slug == slug_normalizado,
+                models.Barbearia.ativa.is_(True),
+            )
+            .first()
+        )
+        if barbearia is None:
+            return {"mensagem": MENSAGEM_RECUPERACAO}
+
+        usuario = (
+            db.query(models.Usuario)
+            .filter(
+                models.Usuario.barbearia_id == barbearia.id,
+                models.Usuario.email == email_normalizado,
+                models.Usuario.ativo.is_(True),
+            )
+            .first()
+        )
+        if usuario is None:
+            return {"mensagem": MENSAGEM_RECUPERACAO}
+        barbearia_id = barbearia.id
 
     token_original = secrets.token_urlsafe(48)
-
-    token_hash = gerar_hash_token(
-        token_original
-    )
-
+    token_hash = gerar_hash_token(token_original)
     agora = datetime.utcnow()
 
     token_registro = models.TokenRecuperacaoSenha(
         usuario_id=usuario.id,
-        barbearia_id=barbearia.id,
+        barbearia_id=barbearia_id,
         token_hash=token_hash,
         criado_em=agora,
-        expira_em=agora + timedelta(
-            minutes=RECUPERACAO_SENHA_EXPIRA_MINUTOS
-        ),
+        expira_em=agora + timedelta(minutes=RECUPERACAO_SENHA_EXPIRA_MINUTOS),
         utilizado=False,
         utilizado_em=None,
     )
 
     try:
-        excluir_tokens_anteriores(
-            usuario_id=usuario.id,
-            db=db,
-        )
-
+        excluir_tokens_anteriores(usuario_id=usuario.id, db=db)
         db.add(token_registro)
         db.commit()
-
     except Exception:
         db.rollback()
+        return {"mensagem": MENSAGEM_RECUPERACAO}
 
-        # Mantém resposta genérica para não expor
-        # informações internas.
-        return {
-            "mensagem": MENSAGEM_RECUPERACAO
-        }
-
-    link_recuperacao = (
-        f"{FRONTEND_URL}/redefinir-senha"
-        f"?token={token_original}"
-    )
+    link_recuperacao = f"{FRONTEND_URL}/redefinir-senha?token={token_original}"
 
     try:
         enviar_email_recuperacao_senha(
@@ -300,20 +284,11 @@ def solicitar_recuperacao_senha_service(
             link_recuperacao=link_recuperacao,
             expira_minutos=RECUPERACAO_SENHA_EXPIRA_MINUTOS,
         )
-
     except ErroEnvioEmail:
-        # Em produção, a resposta deve continuar genérica.
-        # O erro real deve aparecer somente no log.
-        print("")
-        print("=" * 70)
+        # Nunca imprime token/link de recuperação em produção.
         print("ERRO AO ENVIAR E-MAIL DE RECUPERAÇÃO")
-        print(f"Destinatário: {usuario.email}")
-        print(link_recuperacao)
-        print("=" * 70)
-        print("")
-    return {
-        "mensagem": MENSAGEM_RECUPERACAO
-    }
+
+    return {"mensagem": MENSAGEM_RECUPERACAO}
 
 
 def redefinir_senha_service(

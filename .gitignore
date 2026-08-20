@@ -1,7 +1,10 @@
-# Variáveis de ambiente e segredos
+﻿# Variáveis de ambiente e segredos
 .env
 .env.*
+
+# Permitir arquivos de exemplo
 !.env.example
+!.env.*.example
 
 # Ambientes virtuais
 venv/

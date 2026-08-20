@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from datetime import datetime
-from routers import usuarios
+from routers import usuarios, mercado_pago, barbsist_assinaturas, admin_assinaturas_saas, admin_plataforma
 
 from routers import (
     barbearia,
@@ -21,8 +21,7 @@ from routers import (
     barbeiro_disponibilidade_router,
     agendamento_online,
     contas_receber,
-    contas_pagar,
-    auth
+    contas_pagar
 
 )
 
@@ -115,5 +114,10 @@ app.include_router(agendamento_online.router)
 app.include_router(barbearia.router)
 app.include_router(contas_receber.router)
 app.include_router(contas_pagar.router)
-app.include_router(auth.router)
+
 app.include_router(usuarios.router)
+app.include_router(mercado_pago.router)
+
+app.include_router(barbsist_assinaturas.router)
+app.include_router(admin_assinaturas_saas.router)
+app.include_router(admin_plataforma.router)

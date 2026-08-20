@@ -311,11 +311,16 @@ class FecharComanda(BaseModel):
 # CAIXA
 # =========================
 
+# =========================
+# CAIXA
+# =========================
+
 class CaixaBase(BaseModel):
-    tipo: str  # entrada ou saida
+    tipo: str
     descricao: str
     valor: float
     forma_pagamento: Optional[str] = None
+    observacoes: Optional[str] = None
 
 
 class CaixaCreate(CaixaBase):
@@ -324,12 +329,34 @@ class CaixaCreate(CaixaBase):
 
 class CaixaResponse(CaixaBase):
     id: int
+
+    barbearia_id: int
+
+    origem: str
+    referencia_id: Optional[int] = None
+
+    status: str
+
+    usuario_id: Optional[int] = None
+    movimentacao_origem_id: Optional[int] = None
+
     data: datetime
 
     class Config:
         from_attributes = True
 
 
+
+class CaixaResumoResponse(BaseModel):
+    entradas: float
+    saidas: float
+    saldo: float
+    quantidade_movimentacoes: int
+
+
+class CaixaResumoFiltro(BaseModel):
+    data_inicio: date | None = None
+    data_fim: date | None = None
 # =========================
 # COMISSÕES
 # =========================
@@ -372,7 +399,7 @@ class UsuarioResponse(BaseModel):
     email: str
     perfil: str
 
-    barbearia_id: int
+    barbearia_id: int | None = None
     barbeiro_id: int | None = None
 
     ativo: bool
@@ -382,7 +409,8 @@ class UsuarioResponse(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    barbearia_slug: str
+    # Obrigat?rio para usu?rios de barbearia; opcional para o superadmin global.
+    barbearia_slug: str | None = None
     email: str
     senha: str
 
@@ -493,6 +521,9 @@ class PlanoBase(BaseModel):
     nome: str
     descricao: Optional[str] = None
     valor: float
+    valor_pix: Optional[float] = None
+    valor_cartao: Optional[float] = None
+    max_parcelas_cartao: int = 1
     quantidade_servicos: int = 0
     validade_dias: int = 30
     servicos_ids: list[int] = Field(
@@ -516,6 +547,9 @@ class PlanoUpdate(BaseModel):
     nome: str
     descricao: Optional[str] = None
     valor: float
+    valor_pix: Optional[float] = None
+    valor_cartao: Optional[float] = None
+    max_parcelas_cartao: int = 1
     quantidade_servicos: int
     validade_dias: int
     ativo: bool = True
@@ -762,7 +796,7 @@ class AlterarMinhaSenhaRequest(BaseModel):
 
 
 class EsqueciSenhaRequest(BaseModel):
-    barbearia_slug: str
+    barbearia_slug: str | None = None
     email: str
 
 
@@ -774,3 +808,185 @@ class RedefinirSenhaRequest(BaseModel):
 
 class MensagemResponse(BaseModel):
     mensagem: str
+
+
+class MercadoPagoConfiguracaoUpdate(BaseModel):
+    access_token: Optional[str] = None
+    webhook_secret: Optional[str] = None
+    public_key: Optional[str] = None
+    ambiente: str = "producao"
+    ativo: bool = True
+
+
+class MercadoPagoConfiguracaoResponse(BaseModel):
+    configurado: bool
+    conectado: bool = False
+    access_token_configurado: bool
+    webhook_secret_configurado: bool
+    public_key: Optional[str] = None
+    mercado_pago_user_id: Optional[str] = None
+    oauth_status: str = "NAO_CONECTADO"
+    token_expires_at: Optional[datetime] = None
+    conectado_em: Optional[datetime] = None
+    ambiente: str = "producao"
+    ativo: bool = False
+    webhook_url: Optional[str] = None
+
+
+class MercadoPagoOAuthConectarResponse(BaseModel):
+    authorization_url: str
+    expires_in_seconds: int = 600
+
+
+class MercadoPagoOAuthDesconectarResponse(BaseModel):
+    desconectado: bool
+    mensagem: str
+
+
+class MercadoPagoPixRequest(BaseModel):
+    payer_email: Optional[str] = None
+
+
+class MercadoPagoCobrancaPixRequest(BaseModel):
+    origem_negocio: str
+    origem_id: int
+    payer_email: Optional[str] = None
+
+
+class MercadoPagoCartaoRequest(BaseModel):
+    token: str
+    installments: int = 1
+    payment_method_id: str
+    issuer_id: Optional[int] = None
+    payer_email: str
+    identification_type: Optional[str] = None
+    identification_number: Optional[str] = None
+
+
+class MercadoPagoCobrancaCartaoRequest(MercadoPagoCartaoRequest):
+    origem_negocio: str
+    origem_id: int
+
+
+class MercadoPagoPixResponse(BaseModel):
+    cobranca_id: int
+    order_id: Optional[str] = None
+    payment_id: Optional[str] = None
+    status: str
+    external_reference: str
+    valor: float
+    tipo_pagamento: str = "PIX"
+    installments: int = 1
+    valor_parcela: Optional[float] = None
+    payment_method_id: Optional[str] = None
+    payment_type_id: Optional[str] = None
+    status_detail: Optional[str] = None
+    qr_code: Optional[str] = None
+    qr_code_base64: Optional[str] = None
+    ticket_url: Optional[str] = None
+
+
+class MercadoPagoCobrancaResponse(MercadoPagoPixResponse):
+    assinatura_id: Optional[int] = None
+    origem_negocio: str = "PLANO_CLIENTE"
+    origem_id: Optional[int] = None
+    payer_email: Optional[str] = None
+    processado: bool = False
+    data_criacao: datetime
+
+
+class PlanoSaaSBase(BaseModel):
+    nome: str
+    descricao: Optional[str] = None
+    periodo_meses: int = 1
+    valor_pix: float
+    valor_cartao: float
+    max_parcelas_cartao: int = 1
+
+
+class PlanoSaaSCreate(PlanoSaaSBase):
+    ativo: bool = True
+
+
+class PlanoSaaSUpdate(BaseModel):
+    nome: Optional[str] = None
+    descricao: Optional[str] = None
+    periodo_meses: Optional[int] = None
+    valor_pix: Optional[float] = None
+    valor_cartao: Optional[float] = None
+    max_parcelas_cartao: Optional[int] = None
+    ativo: Optional[bool] = None
+
+
+class PlanoSaaSResponse(PlanoSaaSBase):
+    id: int
+    ativo: bool
+    class Config:
+        from_attributes = True
+
+
+class AssinaturaSaaSResponse(BaseModel):
+    id: int
+    barbearia_id: int
+    plano_id: int
+    status: str
+    status_pagamento: str
+    forma_pagamento: Optional[str] = None
+    data_inicio: Optional[datetime] = None
+    data_fim: Optional[datetime] = None
+    data_proximo_vencimento: Optional[datetime] = None
+    liberado_manual: bool = False
+    motivo_bloqueio: Optional[str] = None
+    criado_em: datetime
+    class Config:
+        from_attributes = True
+
+
+class CheckoutSaaSPixRequest(BaseModel):
+    plano_id: int
+    payer_email: str
+
+
+class CheckoutSaaSCartaoRequest(BaseModel):
+    plano_id: int
+    token: str
+    installments: int = 1
+    payment_method_id: str
+    issuer_id: Optional[int] = None
+    payer_email: str
+    identification_type: Optional[str] = None
+    identification_number: Optional[str] = None
+
+
+class PagamentoSaaSResponse(BaseModel):
+    id: int
+    assinatura_id: int
+    barbearia_id: int
+    plano_id: int
+    payment_id: Optional[str] = None
+    external_reference: str
+    tipo_pagamento: str
+    payment_method_id: Optional[str] = None
+    payment_type_id: Optional[str] = None
+    installments: int = 1
+    valor: float
+    valor_parcela: Optional[float] = None
+    payer_email: Optional[str] = None
+    status: str
+    status_detail: Optional[str] = None
+    qr_code: Optional[str] = None
+    qr_code_base64: Optional[str] = None
+    ticket_url: Optional[str] = None
+    processado: bool
+    data_criacao: datetime
+    class Config:
+        from_attributes = True
+
+
+class LiberarAssinaturaSaaSRequest(BaseModel):
+    dias: int = 30
+    observacao: Optional[str] = None
+
+
+class BloquearAssinaturaSaaSRequest(BaseModel):
+    motivo: str
