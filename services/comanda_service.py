@@ -12,11 +12,73 @@ from services.plano_service import (
     atualizar_status_assinatura,
     usar_plano_service
 )
+from services.estoque_service import (
+    devolver_estoque,
+    obter_produto_para_movimentacao,
+)
 
 from auth.tenant import (
     buscar_da_barbearia,
     obter_barbearia_id
 )
+
+def _validar_acesso_barbeiro_comanda(
+    usuario_logado,
+    comanda,
+):
+    """
+    Barbeiro operacional só pode atuar em sua própria comanda.
+    Admin, gerente, recepção e superadmin contextual seguem as permissões
+    da rota.
+    """
+    perfil = (getattr(usuario_logado, "perfil", "") or "").lower()
+
+    if perfil != "barbeiro":
+        return
+
+    barbeiro_id = getattr(usuario_logado, "barbeiro_id", None)
+
+    if barbeiro_id is None or comanda.barbeiro_id != barbeiro_id:
+        raise HTTPException(
+            status_code=403,
+            detail="O barbeiro só pode operar suas próprias comandas.",
+        )
+
+
+def _buscar_comanda_para_operacao(
+    db,
+    comanda_id: int,
+    usuario_logado,
+):
+    """
+    Faz leitura com lock pessimista no PostgreSQL para serializar
+    fechamento, cancelamento e remoção de itens.
+    """
+    barbearia_id = obter_barbearia_id(usuario_logado)
+
+    comanda = (
+        db.query(models.Comanda)
+        .filter(
+            models.Comanda.id == comanda_id,
+            models.Comanda.barbearia_id == barbearia_id,
+        )
+        .with_for_update()
+        .first()
+    )
+
+    if comanda is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Comanda não encontrada.",
+        )
+
+    _validar_acesso_barbeiro_comanda(
+        usuario_logado,
+        comanda,
+    )
+
+    return comanda
+
 
 def calcular_total_devido_comanda(itens):
     """
@@ -227,14 +289,10 @@ def usar_plano_em_item_comanda_service(
     usuario_logado
 ):
     try:
-        comanda = buscar_da_barbearia(
+        comanda = _buscar_comanda_para_operacao(
             db=db,
-            model=models.Comanda,
-            registro_id=comanda_id,
-            usuario=usuario_logado,
-            mensagem_nao_encontrado=(
-                "Comanda não encontrada ou já fechada."
-            )
+            comanda_id=comanda_id,
+            usuario_logado=usuario_logado,
         )
 
         if comanda.status != "aberta":
@@ -527,15 +585,18 @@ def fechar_comanda_service(
                 usuario_id=usuario_logado.id,
             )
 
-        valor_comissao = (
-            calcular_e_registrar_comissao(
-                db=db,
-                barbeiro_id=comanda.barbeiro_id,
-                comanda_id=comanda.id,
-                itens=itens,
-                usuario_logado=usuario_logado
+        valor_comissao = 0.0
+
+        if comanda.barbeiro_id is not None:
+            valor_comissao = (
+                calcular_e_registrar_comissao(
+                    db=db,
+                    barbeiro_id=comanda.barbeiro_id,
+                    comanda_id=comanda.id,
+                    itens=itens,
+                    usuario_logado=usuario_logado
+                )
             )
-        )
 
         db.commit()
         db.refresh(comanda)
@@ -571,51 +632,187 @@ def fechar_comanda_service(
         )
 
 
-def _reverter_item_aberto(db, item):
+def _reverter_item_aberto(
+    db,
+    item,
+    comanda,
+):
     if item.tipo == "produto" and item.produto_id:
-        produto = db.query(models.Produto).filter(models.Produto.id == item.produto_id).first()
-        if produto:
-            produto.estoque = (produto.estoque or 0) + (item.quantidade or 0)
-    if item.tipo == "servico" and item.pago_com_plano and item.uso_plano_id:
-        uso = db.query(models.UsoPlano).filter(models.UsoPlano.id == item.uso_plano_id).first()
+        produto = obter_produto_para_movimentacao(
+            db,
+            produto_id=item.produto_id,
+            barbearia_id=comanda.barbearia_id,
+        )
+        devolver_estoque(
+            produto,
+            item.quantidade or 0,
+        )
+
+    if (
+        item.tipo == "servico"
+        and item.pago_com_plano
+        and item.uso_plano_id
+    ):
+        uso = (
+            db.query(models.UsoPlano)
+            .filter(
+                models.UsoPlano.id == item.uso_plano_id
+            )
+            .with_for_update()
+            .first()
+        )
+
         if uso:
-            assinatura = db.query(models.AssinaturaCliente).filter(models.AssinaturaCliente.id == uso.assinatura_id).first()
+            assinatura = (
+                db.query(models.AssinaturaCliente)
+                .filter(
+                    models.AssinaturaCliente.id == uso.assinatura_id,
+                    models.AssinaturaCliente.barbearia_id
+                    == comanda.barbearia_id,
+                )
+                .with_for_update()
+                .first()
+            )
+
             if assinatura:
-                assinatura.usos_disponiveis = (assinatura.usos_disponiveis or 0) + 1
+                assinatura.usos_disponiveis = (
+                    assinatura.usos_disponiveis or 0
+                ) + 1
+
             db.delete(uso)
+
         item.pago_com_plano = False
         item.uso_plano_id = None
 
 
-def remover_item_comanda_service(db, comanda_id: int, item_id: int, usuario_logado):
+def remover_item_comanda_service(
+    db,
+    comanda_id: int,
+    item_id: int,
+    usuario_logado,
+):
     try:
-        comanda = buscar_da_barbearia(db=db, model=models.Comanda, registro_id=comanda_id, usuario=usuario_logado, mensagem_nao_encontrado="Comanda não encontrada.")
+        comanda = _buscar_comanda_para_operacao(
+            db=db,
+            comanda_id=comanda_id,
+            usuario_logado=usuario_logado,
+        )
+
         if (comanda.status or "").lower() != "aberta":
-            raise HTTPException(status_code=400, detail="Somente comandas abertas permitem remover itens.")
-        item = db.query(models.ItemComanda).filter(models.ItemComanda.id == item_id, models.ItemComanda.comanda_id == comanda.id).first()
-        if not item: raise HTTPException(status_code=404, detail="Item não encontrado nesta comanda.")
-        _reverter_item_aberto(db, item); db.delete(item); db.flush()
-        itens = db.query(models.ItemComanda).filter(models.ItemComanda.comanda_id == comanda.id).all()
+            raise HTTPException(
+                status_code=400,
+                detail="Somente comandas abertas permitem remover itens.",
+            )
+
+        item = (
+            db.query(models.ItemComanda)
+            .filter(
+                models.ItemComanda.id == item_id,
+                models.ItemComanda.comanda_id == comanda.id,
+            )
+            .first()
+        )
+
+        if item is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Item não encontrado nesta comanda.",
+            )
+
+        _reverter_item_aberto(
+            db,
+            item,
+            comanda,
+        )
+        db.delete(item)
+        db.flush()
+
+        itens = (
+            db.query(models.ItemComanda)
+            .filter(
+                models.ItemComanda.comanda_id == comanda.id
+            )
+            .all()
+        )
+
         comanda.total = calcular_total_devido_comanda(itens)
-        db.commit(); db.refresh(comanda)
-        return {"mensagem": "Item removido com sucesso.", "comanda_id": comanda.id, "total": comanda.total}
+
+        db.commit()
+        db.refresh(comanda)
+
+        return {
+            "mensagem": "Item removido com sucesso.",
+            "comanda_id": comanda.id,
+            "total": comanda.total,
+        }
+
     except HTTPException:
-        db.rollback(); raise
+        db.rollback()
+        raise
+
     except Exception as erro:
-        db.rollback(); raise HTTPException(status_code=500, detail=f"Erro ao remover item da comanda: {str(erro)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao remover item da comanda: {erro}",
+        )
 
 
-def cancelar_comanda_service(db, comanda_id: int, usuario_logado):
+def cancelar_comanda_service(
+    db,
+    comanda_id: int,
+    usuario_logado,
+):
     try:
-        comanda = buscar_da_barbearia(db=db, model=models.Comanda, registro_id=comanda_id, usuario=usuario_logado, mensagem_nao_encontrado="Comanda não encontrada.")
+        comanda = _buscar_comanda_para_operacao(
+            db=db,
+            comanda_id=comanda_id,
+            usuario_logado=usuario_logado,
+        )
+
         if (comanda.status or "").lower() != "aberta":
-            raise HTTPException(status_code=400, detail="Somente comandas abertas podem ser canceladas.")
-        itens = db.query(models.ItemComanda).filter(models.ItemComanda.comanda_id == comanda.id).all()
-        for item in itens: _reverter_item_aberto(db, item)
-        comanda.status = "cancelada"; comanda.total = 0; comanda.forma_pagamento = None; comanda.data_fechamento = datetime.now()
-        db.commit(); db.refresh(comanda)
-        return {"mensagem": "Comanda cancelada com sucesso.", "comanda_id": comanda.id, "status": comanda.status}
+            raise HTTPException(
+                status_code=400,
+                detail="Somente comandas abertas podem ser canceladas.",
+            )
+
+        itens = (
+            db.query(models.ItemComanda)
+            .filter(
+                models.ItemComanda.comanda_id == comanda.id
+            )
+            .all()
+        )
+
+        for item in itens:
+            _reverter_item_aberto(
+                db,
+                item,
+                comanda,
+            )
+
+        comanda.status = "cancelada"
+        comanda.total = 0
+        comanda.forma_pagamento = None
+        comanda.data_fechamento = datetime.now()
+
+        db.commit()
+        db.refresh(comanda)
+
+        return {
+            "mensagem": "Comanda cancelada com sucesso.",
+            "comanda_id": comanda.id,
+            "status": comanda.status,
+        }
+
     except HTTPException:
-        db.rollback(); raise
+        db.rollback()
+        raise
+
     except Exception as erro:
-        db.rollback(); raise HTTPException(status_code=500, detail=f"Erro ao cancelar comanda: {str(erro)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao cancelar comanda: {erro}",
+        )
+

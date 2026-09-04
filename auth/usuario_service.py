@@ -31,16 +31,32 @@ def normalizar_email(email: str) -> str:
 
 def validar_senha(nova_senha: str):
     """
-    Valida os requisitos mínimos da senha.
+    Política única de senha do BarbSist:
+    mínimo de 8 caracteres, ao menos uma letra e um número.
     """
 
-    if not nova_senha or len(nova_senha) < 6:
+    if not nova_senha:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "A senha deve possuir pelo menos "
-                "6 caracteres."
-            )
+            detail="A senha é obrigatória."
+        )
+
+    if len(nova_senha) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A senha deve possuir pelo menos 8 caracteres."
+        )
+
+    if not any(caractere.isalpha() for caractere in nova_senha):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A senha deve possuir pelo menos uma letra."
+        )
+
+    if not any(caractere.isdigit() for caractere in nova_senha):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A senha deve possuir pelo menos um número."
         )
 
 

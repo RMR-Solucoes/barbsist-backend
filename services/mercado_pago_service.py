@@ -77,23 +77,63 @@ def _salvar_tokens_oauth(db, cfg, token_data, renovacao=False):
 
 def obter_access_token_valido(db, cfg):
     if not cfg or not cfg.access_token_encrypted:
-        raise HTTPException(status_code=400, detail="Mercado Pago não conectado para esta barbearia.")
+        raise HTTPException(
+            status_code=400,
+            detail="Mercado Pago não conectado para esta barbearia.",
+        )
+
     margem = datetime.now() + timedelta(minutes=5)
+
     if cfg.token_expires_at and cfg.token_expires_at <= margem:
-        if not cfg.refresh_token_encrypted:
-            cfg.oauth_status = "RECONECTAR"
-            cfg.ativo = False
+        # Serializa a renovação do token para evitar dois refreshes
+        # simultâneos sobrescrevendo credenciais entre si.
+        cfg = (
+            db.query(models.MercadoPagoConfiguracao)
+            .filter(models.MercadoPagoConfiguracao.id == cfg.id)
+            .with_for_update()
+            .first()
+        )
+
+        if not cfg or not cfg.access_token_encrypted:
+            raise HTTPException(
+                status_code=400,
+                detail="Mercado Pago não conectado para esta barbearia.",
+            )
+
+        # Outra requisição pode ter renovado enquanto aguardávamos o lock.
+        margem = datetime.now() + timedelta(minutes=5)
+        if cfg.token_expires_at and cfg.token_expires_at <= margem:
+            if not cfg.refresh_token_encrypted:
+                cfg.oauth_status = "RECONECTAR"
+                cfg.ativo = False
+                db.commit()
+                raise HTTPException(
+                    status_code=401,
+                    detail=(
+                        "Conexão Mercado Pago expirada. "
+                        "Reconecte a conta."
+                    ),
+                )
+
+            client_id, client_secret, _ = _oauth_env()
+            token_data = _oauth_post(
+                {
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "grant_type": "refresh_token",
+                    "refresh_token": descriptografar(
+                        cfg.refresh_token_encrypted
+                    ),
+                }
+            )
+            _salvar_tokens_oauth(
+                db,
+                cfg,
+                token_data,
+                renovacao=True,
+            )
             db.commit()
-            raise HTTPException(status_code=401, detail="Conexão Mercado Pago expirada. Reconecte a conta.")
-        client_id, client_secret, _ = _oauth_env()
-        token_data = _oauth_post({
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "grant_type": "refresh_token",
-            "refresh_token": descriptografar(cfg.refresh_token_encrypted),
-        })
-        _salvar_tokens_oauth(db, cfg, token_data, renovacao=True)
-        db.commit()
+
     return descriptografar(cfg.access_token_encrypted)
 
 def iniciar_oauth_service(db, usuario):
@@ -644,29 +684,76 @@ def _configuracao_por_webhook(db, payload, order_id, bid_forcado=None):
     return obter_configuracao(db, cobranca.barbearia_id) if cobranca else None
 
 
-def _processar_order_webhook(db, order_id, payload, xs, xr, bid_forcado=None):
+def _processar_order_webhook(
+    db,
+    order_id,
+    payload,
+    xs,
+    xr,
+    bid_forcado=None,
+):
     tipo = (payload.get("type") or "").lower()
+
     if tipo and tipo != "order":
         return {"status": "ignorado", "tipo": tipo}
+
     if not order_id:
         return {"status": "ignorado", "motivo": "sem order id"}
 
-    cfg_pre = _configuracao_por_webhook(db, payload, order_id, bid_forcado)
+    cfg_pre = _configuracao_por_webhook(
+        db,
+        payload,
+        order_id,
+        bid_forcado,
+    )
+
     secret = _webhook_secret(cfg_pre)
+
     if not secret:
         raise HTTPException(
             status_code=503,
-            detail="Webhook Mercado Pago sem assinatura secreta configurada.",
+            detail=(
+                "Webhook Mercado Pago sem assinatura secreta "
+                "configurada."
+            ),
         )
-    if not validar_assinatura_webhook(xs, xr, order_id, secret):
+
+    if not validar_assinatura_webhook(
+        xs,
+        xr,
+        order_id,
+        secret,
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Assinatura do Webhook inválida.",
         )
-    if not cfg_pre or not cfg_pre.ativo or not cfg_pre.access_token_encrypted:
+
+    if (
+        not cfg_pre
+        or not cfg_pre.ativo
+        or not cfg_pre.access_token_encrypted
+    ):
         raise HTTPException(
             status_code=404,
-            detail="Configuração Mercado Pago da barbearia não encontrada.",
+            detail=(
+                "Configuração Mercado Pago da barbearia "
+                "não encontrada."
+            ),
+        )
+
+    seller_user_id = payload.get("user_id")
+    if (
+        seller_user_id is not None
+        and cfg_pre.mercado_pago_user_id
+        and str(seller_user_id) != str(cfg_pre.mercado_pago_user_id)
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Webhook recebido para vendedor Mercado Pago "
+                "divergente da configuração da barbearia."
+            ),
         )
 
     order = _api(
@@ -674,42 +761,94 @@ def _processar_order_webhook(db, order_id, payload, xs, xr, bid_forcado=None):
         f"/v1/orders/{order_id}",
         obter_access_token_valido(db, cfg_pre),
     )
+
     ext = order.get("external_reference")
     f = _order_fields(order)
     bid = cfg_pre.barbearia_id
-    c = db.query(models.MercadoPagoCobranca).filter(
-        models.MercadoPagoCobranca.barbearia_id == bid,
-        (
-            (models.MercadoPagoCobranca.order_id == str(order_id))
-            | (models.MercadoPagoCobranca.external_reference == ext)
-        ),
-    ).first()
+
+    # O lock garante que dois webhooks simultâneos não processem
+    # a mesma cobrança em paralelo.
+    c = (
+        db.query(models.MercadoPagoCobranca)
+        .filter(
+            models.MercadoPagoCobranca.barbearia_id == bid,
+            (
+                (models.MercadoPagoCobranca.order_id == str(order_id))
+                | (
+                    models.MercadoPagoCobranca.external_reference
+                    == ext
+                )
+            ),
+        )
+        .with_for_update()
+        .first()
+    )
+
     if not c:
-        return {"status": "ignorado", "motivo": "cobrança não pertence ao BarbSist"}
+        return {
+            "status": "ignorado",
+            "motivo": "cobrança não pertence ao BarbSist",
+        }
+
+    # Defesa em profundidade: configuração, cobrança e tenant precisam
+    # apontar para a mesma barbearia.
+    if c.barbearia_id != cfg_pre.barbearia_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Cobrança e configuração Mercado Pago divergentes.",
+        )
+
+    if (
+        ext
+        and c.external_reference
+        and ext != c.external_reference
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="external_reference divergente da cobrança registrada.",
+        )
 
     c.order_id = str(order_id)
     c.payment_id = f["payment_id"] or c.payment_id
     c.status = f["status"] or c.status
     c.status_detail = f["status_detail"] or c.status_detail
-    c.payment_method_id = f["payment_method_id"] or c.payment_method_id
-    c.payment_type_id = f["payment_type_id"] or c.payment_type_id
-    c.installments = int(f["installments"] or c.installments or 1)
+    c.payment_method_id = (
+        f["payment_method_id"] or c.payment_method_id
+    )
+    c.payment_type_id = (
+        f["payment_type_id"] or c.payment_type_id
+    )
+    c.installments = int(
+        f["installments"] or c.installments or 1
+    )
     c.qr_code = f["qr_code"] or c.qr_code
-    c.qr_code_base64 = f["qr_code_base64"] or c.qr_code_base64
+    c.qr_code_base64 = (
+        f["qr_code_base64"] or c.qr_code_base64
+    )
     c.ticket_url = f["ticket_url"] or c.ticket_url
+
     if c.installments:
-        c.valor_parcela = round(float(c.valor) / c.installments, 2)
+        c.valor_parcela = round(
+            float(c.valor) / c.installments,
+            2,
+        )
 
     if c.processado:
         db.commit()
         return {"status": "ja_processado"}
 
-    # Orders API: transaction.payments.status == "processed" representa pagamento aprovado.
     if c.status != "processed":
         db.commit()
-        return {"status": c.status, "status_detail": c.status_detail}
+        return {
+            "status": c.status,
+            "status_detail": c.status_detail,
+        }
 
-    valor_order = round(float(f["amount"] or 0), 2)
+    valor_order = round(
+        float(f["amount"] or 0),
+        2,
+    )
+
     if valor_order != round(float(c.valor), 2):
         db.rollback()
         raise HTTPException(
@@ -717,23 +856,44 @@ def _processar_order_webhook(db, order_id, payload, xs, xr, bid_forcado=None):
             detail="Valor processado diverge da cobrança.",
         )
 
-    origem = _normalizar_origem_negocio(c.origem_negocio or "PLANO_CLIENTE")
+    origem = _normalizar_origem_negocio(
+        c.origem_negocio or "PLANO_CLIENTE"
+    )
+
+    # COMANDA/VENDA permanecem reservadas e deliberadamente não
+    # são ativadas neste pacote de hardening.
     if origem != "PLANO_CLIENTE":
         db.commit()
         raise HTTPException(
             status_code=501,
-            detail=f"Processamento da origem {origem} ainda não foi ativado nesta etapa.",
+            detail=(
+                f"Processamento da origem {origem} ainda "
+                "não foi ativado nesta etapa."
+            ),
         )
 
     aid = c.origem_id or c.assinatura_id
-    ass = db.query(models.AssinaturaCliente).filter(
-        models.AssinaturaCliente.id == aid,
-        models.AssinaturaCliente.barbearia_id == bid,
-    ).first()
-    plano = (
-        db.query(models.Plano).filter(models.Plano.id == ass.plano_id).first()
-        if ass else None
+
+    ass = (
+        db.query(models.AssinaturaCliente)
+        .filter(
+            models.AssinaturaCliente.id == aid,
+            models.AssinaturaCliente.barbearia_id == bid,
+        )
+        .first()
     )
+
+    plano = (
+        db.query(models.Plano)
+        .filter(
+            models.Plano.id == ass.plano_id,
+            models.Plano.barbearia_id == bid,
+        )
+        .first()
+        if ass
+        else None
+    )
+
     if not ass or not plano:
         raise HTTPException(
             status_code=404,
@@ -745,10 +905,14 @@ def _processar_order_webhook(db, order_id, payload, xs, xr, bid_forcado=None):
         if (c.tipo_pagamento or "").upper() == "CARTAO"
         else "MERCADO_PAGO_PIX"
     )
+
     obs = (
-        f"Mercado Pago order_id={c.order_id}; payment_id={c.payment_id or ''}; "
-        f"{c.installments or 1}x; método={c.payment_method_id or ''}"
+        f"Mercado Pago order_id={c.order_id}; "
+        f"payment_id={c.payment_id or ''}; "
+        f"{c.installments or 1}x; "
+        f"método={c.payment_method_id or ''}"
     )
+
     try:
         confirmar_pagamento_assinatura_service(
             db,
@@ -769,6 +933,7 @@ def _processar_order_webhook(db, order_id, payload, xs, xr, bid_forcado=None):
     c.processado = True
     c.processado_em = datetime.now()
     db.commit()
+
     return {
         "status": "processed",
         "processado": True,
@@ -777,7 +942,6 @@ def _processar_order_webhook(db, order_id, payload, xs, xr, bid_forcado=None):
         "order_id": c.order_id,
         "payment_id": c.payment_id,
     }
-
 
 def processar_webhook_global_service(db, data_id, payload, xs, xr):
     order_id = data_id or str((payload.get("data") or {}).get("id") or "")

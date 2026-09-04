@@ -36,6 +36,7 @@ from services.plano_service import (
     renovar_assinatura_service,
     suspender_assinatura_service,
     reativar_assinatura_service,
+    cancelar_assinatura_service,
     verificar_inadimplencia_service,
 )
 
@@ -241,6 +242,24 @@ def reativar_assinatura(
 # ASSINATURAS — ATUALIZAÇÃO GENÉRICA
 # Deve ficar após as rotas específicas.
 # ============================================================
+
+@router.put(
+    "/assinaturas/{assinatura_id}/cancelar",
+    response_model=AssinaturaClienteResponse,
+)
+def cancelar_assinatura(
+    assinatura_id: int,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(
+        admin_ou_gerente
+    ),
+):
+    return cancelar_assinatura_service(
+        db=db,
+        assinatura_id=assinatura_id,
+        usuario_logado=usuario_logado,
+    )
+
 
 @router.put(
     "/assinaturas/{assinatura_id}",

@@ -129,6 +129,29 @@ def cadastrar_barbearia_service(
         dados
     )
 
+    # Evita duplicidade evidente sem impedir que um mesmo responsável
+    # administre unidades diferentes: bloqueia apenas quando e-mail e
+    # WhatsApp coincidem com uma barbearia já cadastrada.
+    duplicada = (
+        db.query(models.Barbearia)
+        .filter(
+            models.Barbearia.email == dados_validados["email"],
+            models.Barbearia.telefone_whatsapp
+            == dados_validados["telefone_whatsapp"],
+        )
+        .first()
+    )
+
+    if duplicada is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Já existe uma barbearia cadastrada com este e-mail "
+                "e WhatsApp. Utilize a recuperação de senha ou entre "
+                "em contato com o suporte."
+            ),
+        )
+
     try:
         codigo = gerar_proximo_codigo(
             db

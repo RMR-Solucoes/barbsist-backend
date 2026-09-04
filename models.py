@@ -7,7 +7,9 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
-    UniqueConstraint
+    UniqueConstraint,
+    Index,
+    text
 )
 from sqlalchemy.orm import relationship
 from datetime import datetime
@@ -478,8 +480,18 @@ class Comanda(BarbeariaMixin, Base):
 
     id = Column(Integer, primary_key=True, index=True)
 
+    # Um agendamento pode originar no máximo uma comanda.
+    # NULL continua permitido para comandas abertas manualmente.
+    agendamento_id = Column(
+        Integer,
+        ForeignKey("agendamentos.id"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+
     cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=True)
-    barbeiro_id = Column(Integer, ForeignKey("barbeiros.id"), nullable=False)
+    barbeiro_id = Column(Integer, ForeignKey("barbeiros.id"), nullable=True)
 
     status = Column(String, default="aberta")
     total = Column(Float, default=0)
@@ -575,8 +587,183 @@ class ItemComanda(Base):
     )
 
 
+
+
+# =========================
+# VENDAS AVULSAS
+# =========================
+
+class Venda(BarbeariaMixin, Base):
+    __tablename__ = "vendas"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    cliente_id = Column(
+        Integer,
+        ForeignKey("clientes.id"),
+        nullable=True,
+        index=True
+    )
+
+    barbeiro_id = Column(
+        Integer,
+        ForeignKey("barbeiros.id"),
+        nullable=True,
+        index=True
+    )
+
+    status = Column(
+        String,
+        default="aberta",
+        nullable=False,
+        index=True
+    )
+
+    total = Column(
+        Float,
+        default=0,
+        nullable=False
+    )
+
+    forma_pagamento = Column(
+        String,
+        nullable=True
+    )
+
+    data_abertura = Column(
+        DateTime,
+        default=datetime.now,
+        nullable=False
+    )
+
+    data_fechamento = Column(
+        DateTime,
+        nullable=True
+    )
+
+    usuario_id = Column(
+        Integer,
+        ForeignKey("usuarios.id"),
+        nullable=True,
+        index=True
+    )
+
+    cliente = relationship("Cliente")
+    barbeiro = relationship("Barbeiro")
+    usuario = relationship("Usuario")
+
+    itens = relationship(
+        "ItemVenda",
+        back_populates="venda",
+        cascade="all, delete-orphan"
+    )
+
+    @property
+    def cliente_nome(self):
+        return (
+            self.cliente.nome
+            if self.cliente
+            else "CLIENTE AVULSO"
+        )
+
+    @property
+    def barbeiro_nome(self):
+        return (
+            self.barbeiro.nome
+            if self.barbeiro
+            else None
+        )
+
+
+class ItemVenda(Base):
+    __tablename__ = "itens_venda"
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True
+    )
+
+    venda_id = Column(
+        Integer,
+        ForeignKey("vendas.id"),
+        nullable=False,
+        index=True
+    )
+
+    produto_id = Column(
+        Integer,
+        ForeignKey("produtos.id"),
+        nullable=False,
+        index=True
+    )
+
+    descricao = Column(
+        String,
+        nullable=False
+    )
+
+    quantidade = Column(
+        Integer,
+        default=1,
+        nullable=False
+    )
+
+    valor_unitario = Column(
+        Float,
+        default=0,
+        nullable=False
+    )
+
+    subtotal = Column(
+        Float,
+        default=0,
+        nullable=False
+    )
+
+    venda = relationship(
+        "Venda",
+        back_populates="itens"
+    )
+
+    produto = relationship("Produto")
+
+
 class Caixa(BarbeariaMixin, Base):
     __tablename__ = "caixa"
+
+    __table_args__ = (
+        Index(
+            "uq_caixa_comanda_origem_referencia",
+            "barbearia_id",
+            "origem",
+            "referencia_id",
+            unique=True,
+            postgresql_where=text(
+                "origem = 'COMANDA' AND referencia_id IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "origem = 'COMANDA' AND referencia_id IS NOT NULL"
+            ),
+        ),
+        Index(
+            "uq_caixa_venda_origem_referencia",
+            "barbearia_id",
+            "origem",
+            "referencia_id",
+            unique=True,
+            postgresql_where=text(
+                "origem = 'VENDA' AND referencia_id IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "origem = 'VENDA' AND referencia_id IS NOT NULL"
+            ),
+        ),
+    )
 
     id = Column(
         Integer,
@@ -604,7 +791,7 @@ class Caixa(BarbeariaMixin, Base):
         nullable=True
     )
 
-    # MANUAL | COMANDA | PLANO | CONTA_RECEBER |
+    # MANUAL | COMANDA | VENDA | PLANO | CONTA_RECEBER |
     # CONTA_PAGAR | ESTORNO | SANGRIA | SUPRIMENTO
     origem = Column(
         String,
@@ -676,7 +863,13 @@ class Comissao(BarbeariaMixin, Base):
     id = Column(Integer, primary_key=True, index=True)
 
     barbeiro_id = Column(Integer, ForeignKey("barbeiros.id"), nullable=False)
-    comanda_id = Column(Integer, ForeignKey("comandas.id"), nullable=False)
+    comanda_id = Column(
+        Integer,
+        ForeignKey("comandas.id"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
 
     valor_servico = Column(Float, nullable=False)
     percentual = Column(Float, nullable=False)
@@ -998,6 +1191,14 @@ class Plano(BarbeariaMixin, Base):
 class PlanoServico(Base):
     __tablename__ = "planos_servicos"
 
+    __table_args__ = (
+        UniqueConstraint(
+            "plano_id",
+            "servico_id",
+            name="uq_plano_servico",
+        ),
+    )
+
     id = Column(
         Integer,
         primary_key=True,
@@ -1027,6 +1228,21 @@ class PlanoServico(Base):
 
 class AssinaturaCliente(BarbeariaMixin, Base):
     __tablename__ = "assinaturas_clientes"
+
+    __table_args__ = (
+        Index(
+            "uq_assinatura_cliente_em_aberto",
+            "barbearia_id",
+            "cliente_id",
+            unique=True,
+            postgresql_where=text(
+                "status IN ('PENDENTE', 'ATIVO', 'VENCIDO', 'SUSPENSO')"
+            ),
+            sqlite_where=text(
+                "status IN ('PENDENTE', 'ATIVO', 'VENCIDO', 'SUSPENSO')"
+            ),
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
 
@@ -1079,13 +1295,13 @@ class AssinaturaCliente(BarbeariaMixin, Base):
 
     status = Column(
         String,
-        default="ativo"
+        default="PENDENTE"
     )
 
     # pago | vencido | inadimplente | pendente_pagamento
     status_pagamento = Column(
         String,
-        default="pendente_pagamento"
+        default="PENDENTE_PAGAMENTO"
     )
 
     cliente = relationship("Cliente")
@@ -1093,6 +1309,21 @@ class AssinaturaCliente(BarbeariaMixin, Base):
 
 class UsoPlano(Base):
     __tablename__ = "usos_planos"
+
+    __table_args__ = (
+        Index(
+            "uq_uso_plano_comanda_servico",
+            "comanda_id",
+            "servico_id",
+            unique=True,
+            postgresql_where=text(
+                "comanda_id IS NOT NULL AND servico_id IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "comanda_id IS NOT NULL AND servico_id IS NOT NULL"
+            ),
+        ),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
 
@@ -1126,6 +1357,21 @@ class UsoPlano(Base):
 class PagamentoPlano(Base):
     __tablename__ = "pagamentos_planos"
 
+    __table_args__ = (
+        Index(
+            "uq_pagamento_plano_assinatura_referencia_pago",
+            "assinatura_id",
+            "referencia_mes",
+            unique=True,
+            postgresql_where=text(
+                "status = 'PAGO' AND referencia_mes IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "status = 'PAGO' AND referencia_mes IS NOT NULL"
+            ),
+        ),
+    )
+
     id = Column(Integer, primary_key=True, index=True)
 
     assinatura_id = Column(
@@ -1149,7 +1395,7 @@ class PagamentoPlano(Base):
     valor = Column(Float, nullable=False)
     forma_pagamento = Column(String, nullable=False)
 
-    status = Column(String, default="pago")  # pago, estornado, pendente
+    status = Column(String, default="PAGO")  # pago, estornado, pendente
 
     referencia_mes = Column(String, nullable=True)  # exemplo: 2026-05
 
@@ -1337,6 +1583,7 @@ class PlanoSaaS(Base):
     valor_pix = Column(Float, nullable=False)
     valor_cartao = Column(Float, nullable=False)
     max_parcelas_cartao = Column(Integer, nullable=False, default=1)
+    limite_barbeiros = Column(Integer, nullable=False, default=1)
     ativo = Column(Boolean, nullable=False, default=True)
     data_criacao = Column(DateTime, nullable=False, default=datetime.now)
     data_atualizacao = Column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
@@ -1361,6 +1608,11 @@ class AssinaturaSaaS(Base):
     data_proximo_vencimento = Column(DateTime, nullable=True)
     liberado_manual = Column(Boolean, nullable=False, default=False)
     motivo_bloqueio = Column(String, nullable=True)
+
+    promocao_codigo = Column(String, nullable=True, index=True)
+    promocao_inicio = Column(DateTime, nullable=True)
+    promocao_fim = Column(DateTime, nullable=True)
+    fundador_posicao = Column(Integer, nullable=True, unique=True)
 
     criado_em = Column(DateTime, nullable=False, default=datetime.now)
     atualizado_em = Column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
@@ -1390,7 +1642,15 @@ class PagamentoSaaS(Base):
     payment_method_id = Column(String, nullable=True)
     payment_type_id = Column(String, nullable=True)
     installments = Column(Integer, nullable=False, default=1)
+    # Valor efetivamente cobrado no meio de pagamento.
     valor = Column(Float, nullable=False)
+
+    # Valor comercial da assinatura antes de qualquer credito.
+    valor_original = Column(Float, nullable=True)
+
+    # Credito da carteira utilizado nesta cobranca.
+    valor_credito = Column(Float, nullable=False, default=0)
+
     valor_parcela = Column(Float, nullable=True)
     payer_email = Column(String, nullable=True)
 
@@ -1407,3 +1667,130 @@ class PagamentoSaaS(Base):
     assinatura = relationship("AssinaturaSaaS")
     barbearia = relationship("Barbearia")
     plano = relationship("PlanoSaaS")
+
+class AssinaturaSaaSAuditoria(Base):
+    """
+    Histórico administrativo de alterações manuais em assinaturas SaaS.
+    """
+
+    __tablename__ = "assinaturas_saas_auditoria"
+
+    id = Column(Integer, primary_key=True, index=True)
+    assinatura_id = Column(
+        Integer,
+        ForeignKey("assinaturas_saas.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    barbearia_id = Column(
+        Integer,
+        ForeignKey("barbearias.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    usuario_id = Column(
+        Integer,
+        ForeignKey("usuarios.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    acao = Column(String, nullable=False, index=True)
+    observacao = Column(String, nullable=True)
+    status_anterior = Column(String, nullable=True)
+    status_novo = Column(String, nullable=True)
+    criado_em = Column(DateTime, nullable=False, default=datetime.now)
+
+    assinatura = relationship("AssinaturaSaaS")
+    barbearia = relationship("Barbearia")
+    usuario = relationship("Usuario")
+
+
+# ==================================
+# FINANCEIRO GLOBAL DA PLATAFORMA
+# ==================================
+class FinanceiroPlataformaMovimentacao(Base):
+    """
+    Movimentacoes financeiras administrativas da plataforma BarbSist.
+
+    As receitas automaticas de assinaturas permanecem em PagamentoSaaS.
+    Esta tabela registra despesas, outras receitas e ajustes administrativos.
+    """
+
+    __tablename__ = "financeiro_plataforma_movimentacoes"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    tipo = Column(
+        String,
+        nullable=False,
+        index=True,
+    )  # ENTRADA | SAIDA
+
+    categoria = Column(
+        String,
+        nullable=False,
+        index=True,
+    )
+
+    descricao = Column(
+        String,
+        nullable=False,
+    )
+
+    valor = Column(
+        Float,
+        nullable=False,
+    )
+
+    data_competencia = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.now,
+        index=True,
+    )
+
+    data_realizacao = Column(
+        DateTime,
+        nullable=True,
+        index=True,
+    )
+
+    forma_pagamento = Column(
+        String,
+        nullable=True,
+    )
+
+    observacao = Column(
+        String,
+        nullable=True,
+    )
+
+    status = Column(
+        String,
+        nullable=False,
+        default="REALIZADO",
+        index=True,
+    )
+
+    usuario_id = Column(
+        Integer,
+        ForeignKey("usuarios.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    criado_em = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.now,
+    )
+
+    atualizado_em = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.now,
+        onupdate=datetime.now,
+    )
+
+    usuario = relationship("Usuario")
+

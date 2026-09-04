@@ -10,6 +10,7 @@ from services.conta_receber_service import (
     excluir_conta_receber_service,
     listar_contas_receber_service,
     receber_conta_service,
+    atualizar_conta_receber_service,
 )
 
 
@@ -65,6 +66,24 @@ def buscar_conta_receber(
     return buscar_conta_receber_service(
         db=db,
         conta_id=conta_id,
+        usuario_logado=usuario_logado,
+    )
+
+
+@router.patch(
+    "/{conta_id}",
+    response_model=schemas.ContaReceberResponse,
+)
+def atualizar_conta_receber(
+    conta_id: int,
+    dados: schemas.ContaReceberUpdate,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin_ou_gerente),
+):
+    return atualizar_conta_receber_service(
+        db=db,
+        conta_id=conta_id,
+        dados=dados,
         usuario_logado=usuario_logado,
     )
 

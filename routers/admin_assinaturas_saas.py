@@ -5,6 +5,7 @@ from auth.permissions import superadmin
 from database import get_db
 from schemas import (
     AssinaturaSaaSResponse,
+    AssinaturaSaaSAuditoriaResponse,
     BloquearAssinaturaSaaSRequest,
     LiberarAssinaturaSaaSRequest,
     PagamentoSaaSResponse,
@@ -18,6 +19,7 @@ from services.assinatura_saas_service import (
     criar_plano_saas_service,
     liberar_assinatura_manual_service,
     listar_assinaturas_admin_service,
+    listar_auditoria_assinaturas_saas_service,
     listar_pagamentos_admin_service,
     listar_planos_saas_service,
     status_mercado_pago_barbsist_service,
@@ -47,13 +49,28 @@ def pagamentos(db: Session = Depends(get_db), usuario_logado=Depends(superadmin)
 
 @router.put("/assinaturas/{assinatura_id}/liberar", response_model=AssinaturaSaaSResponse)
 def liberar(assinatura_id: int, dados: LiberarAssinaturaSaaSRequest, db: Session = Depends(get_db), usuario_logado=Depends(superadmin)):
-    return liberar_assinatura_manual_service(db, assinatura_id, dados)
+    return liberar_assinatura_manual_service(db, assinatura_id, dados, usuario_logado)
 
 @router.put("/assinaturas/{assinatura_id}/bloquear", response_model=AssinaturaSaaSResponse)
 def bloquear(assinatura_id: int, dados: BloquearAssinaturaSaaSRequest, db: Session = Depends(get_db), usuario_logado=Depends(superadmin)):
-    return bloquear_assinatura_service(db, assinatura_id, dados)
+    return bloquear_assinatura_service(db, assinatura_id, dados, usuario_logado)
 
 
 @router.get("/mercado-pago/status")
 def mercado_pago_status(request: Request, usuario_logado=Depends(superadmin)):
     return status_mercado_pago_barbsist_service(str(request.base_url).rstrip("/"))
+
+
+@router.get(
+    "/auditoria",
+    response_model=list[AssinaturaSaaSAuditoriaResponse],
+)
+def auditoria_assinaturas(
+    assinatura_id: int | None = None,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(superadmin),
+):
+    return listar_auditoria_assinaturas_saas_service(
+        db,
+        assinatura_id=assinatura_id,
+    )

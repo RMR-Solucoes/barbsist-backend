@@ -1,6 +1,7 @@
 from datetime import date, datetime, time, timedelta
 
 from fastapi import HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
 
 import models
@@ -10,6 +11,7 @@ from auth.tenant import (
     consultar_da_barbearia,
     obter_barbearia_id,
 )
+from services.disponibilidade_service import validar_agendamento_no_expediente
 
 
 STATUS_COM_CONFLITO = (
@@ -230,6 +232,14 @@ def criar_agendamento_service(db, dados, usuario_logado):
     inicio = dados.data_hora_inicio
     fim = inicio + timedelta(minutes=servico.tempo_medio_minutos or 30)
 
+    validar_agendamento_no_expediente(
+        db=db,
+        barbearia_id=barbearia_id,
+        barbeiro_id=dados.barbeiro_id,
+        inicio=inicio,
+        fim=fim,
+    )
+
     verificar_conflito_horario(
         db=db,
         barbeiro_id=dados.barbeiro_id,
@@ -360,6 +370,24 @@ def atualizar_status_agendamento_service(
         agendamento_id,
         usuario_logado,
     )
+
+    atual = (agendamento.status or "").strip().lower()
+    transicoes = {
+        "agendado": {"confirmado", "em_atendimento", "cancelado", "nao_compareceu", "reagendado"},
+        "confirmado": {"em_atendimento", "cancelado", "nao_compareceu", "reagendado"},
+        "reagendado": {"confirmado", "em_atendimento", "cancelado", "nao_compareceu", "reagendado"},
+        "em_atendimento": {"concluido", "cancelado"},
+        "concluido": set(),
+        "cancelado": set(),
+        "nao_compareceu": set(),
+    }
+
+    if status_normalizado != atual and status_normalizado not in transicoes.get(atual, set()):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Transição de status inválida: {atual} -> {status_normalizado}.",
+        )
+
     agendamento.status = status_normalizado
 
     db.commit()
@@ -374,11 +402,40 @@ def converter_agendamento_em_comanda_service(
     usuario_logado,
 ):
     barbearia_id = obter_barbearia_id(usuario_logado)
-    agendamento = buscar_agendamento_service(
-        db,
-        agendamento_id,
-        usuario_logado,
+
+    # Serializa a conversão no PostgreSQL.
+    agendamento = (
+        db.query(models.Agendamento)
+        .filter(
+            models.Agendamento.id == agendamento_id,
+            models.Agendamento.barbearia_id == barbearia_id,
+        )
+        .with_for_update()
+        .first()
     )
+
+    if agendamento is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Agendamento não encontrado.",
+        )
+
+    comanda_existente = (
+        db.query(models.Comanda)
+        .filter(
+            models.Comanda.agendamento_id == agendamento.id
+        )
+        .first()
+    )
+
+    if comanda_existente is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Este agendamento já foi convertido em comanda "
+                f"#{comanda_existente.id}."
+            ),
+        )
 
     if (agendamento.status or "").lower() in (
         "cancelado",
@@ -400,6 +457,7 @@ def converter_agendamento_em_comanda_service(
     try:
         comanda = models.Comanda(
             barbearia_id=barbearia_id,
+            agendamento_id=agendamento.id,
             cliente_id=agendamento.cliente_id,
             barbeiro_id=agendamento.barbeiro_id,
             status="aberta",
@@ -426,6 +484,13 @@ def converter_agendamento_em_comanda_service(
         db.commit()
         db.refresh(comanda)
 
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Este agendamento já possui uma comanda.",
+        )
+
     except Exception:
         db.rollback()
         raise
@@ -451,10 +516,11 @@ def reagendar_agendamento_service(
         usuario_logado,
     )
 
-    if (agendamento.status or "").lower() == "cancelado":
+    status_atual = (agendamento.status or "").lower()
+    if status_atual in ("cancelado", "concluido", "nao_compareceu", "em_atendimento"):
         raise HTTPException(
             status_code=400,
-            detail="Agendamento cancelado não pode ser reagendado.",
+            detail="Agendamento neste status não pode ser reagendado.",
         )
 
     servico = validar_servico(
@@ -465,6 +531,14 @@ def reagendar_agendamento_service(
 
     novo_fim = nova_data_hora_inicio + timedelta(
         minutes=servico.tempo_medio_minutos or 30
+    )
+
+    validar_agendamento_no_expediente(
+        db=db,
+        barbearia_id=obter_barbearia_id(usuario_logado),
+        barbeiro_id=agendamento.barbeiro_id,
+        inicio=nova_data_hora_inicio,
+        fim=novo_fim,
     )
 
     verificar_conflito_horario(

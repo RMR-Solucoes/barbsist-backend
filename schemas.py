@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel, Field, model_validator
+from typing import Optional, Literal
 from datetime import datetime, date
 
 
@@ -272,7 +272,7 @@ class ItemComandaResponse(BaseModel):
 
 class ComandaBase(BaseModel):
     cliente_id: Optional[int] = None
-    barbeiro_id: int
+    barbeiro_id: Optional[int] = None
 
 
 class ComandaCreate(ComandaBase):
@@ -306,6 +306,64 @@ class ComandaResponse(ComandaBase):
 
 class FecharComanda(BaseModel):
     forma_pagamento: str
+
+
+
+# =========================
+# VENDAS AVULSAS
+# =========================
+
+class VendaCreate(BaseModel):
+    cliente_id: Optional[int] = None
+    barbeiro_id: Optional[int] = None
+
+
+class AdicionarProdutoVenda(BaseModel):
+    produto_id: int
+    quantidade: int = 1
+
+
+class ItemVendaResponse(BaseModel):
+    id: int
+    venda_id: int
+    produto_id: int
+    descricao: str
+    quantidade: int
+    valor_unitario: float
+    subtotal: float
+
+    class Config:
+        from_attributes = True
+
+
+class VendaResponse(BaseModel):
+    id: int
+
+    cliente_id: Optional[int] = None
+    barbeiro_id: Optional[int] = None
+
+    status: str
+    total: float
+
+    forma_pagamento: Optional[str] = None
+
+    data_abertura: Optional[datetime] = None
+    data_fechamento: Optional[datetime] = None
+
+    cliente_nome: Optional[str] = None
+    barbeiro_nome: Optional[str] = None
+
+    itens: list[ItemVendaResponse] = Field(
+        default_factory=list
+    )
+
+    class Config:
+        from_attributes = True
+
+
+class FecharVenda(BaseModel):
+    forma_pagamento: str
+
 
 # =========================
 # CAIXA
@@ -418,6 +476,16 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class SuperadminContextoInfo(BaseModel):
+    barbearia_id: int
+    barbearia_nome: str
+    barbearia_slug: str
+
+
+class SuperadminContextoTokenResponse(TokenResponse):
+    contexto: SuperadminContextoInfo | None = None
 
 class CadastroBarbeariaRequest(BaseModel):
     nome_barbearia: str
@@ -552,7 +620,6 @@ class PlanoUpdate(BaseModel):
     max_parcelas_cartao: int = 1
     quantidade_servicos: int
     validade_dias: int
-    ativo: bool = True
     servicos_ids: list[int] = Field(
         default_factory=list
     )
@@ -902,6 +969,7 @@ class PlanoSaaSBase(BaseModel):
     valor_pix: float
     valor_cartao: float
     max_parcelas_cartao: int = 1
+    limite_barbeiros: int = 1
 
 
 class PlanoSaaSCreate(PlanoSaaSBase):
@@ -915,6 +983,7 @@ class PlanoSaaSUpdate(BaseModel):
     valor_pix: Optional[float] = None
     valor_cartao: Optional[float] = None
     max_parcelas_cartao: Optional[int] = None
+    limite_barbeiros: Optional[int] = None
     ativo: Optional[bool] = None
 
 
@@ -937,6 +1006,10 @@ class AssinaturaSaaSResponse(BaseModel):
     data_proximo_vencimento: Optional[datetime] = None
     liberado_manual: bool = False
     motivo_bloqueio: Optional[str] = None
+    promocao_codigo: Optional[str] = None
+    promocao_inicio: Optional[datetime] = None
+    promocao_fim: Optional[datetime] = None
+    fundador_posicao: Optional[int] = None
     criado_em: datetime
     class Config:
         from_attributes = True
@@ -990,3 +1063,259 @@ class LiberarAssinaturaSaaSRequest(BaseModel):
 
 class BloquearAssinaturaSaaSRequest(BaseModel):
     motivo: str
+
+
+class ContaReceberUpdate(BaseModel):
+    descricao: Optional[str] = None
+    cliente_id: Optional[int] = None
+    valor: Optional[float] = None
+    vencimento: Optional[date] = None
+    forma_pagamento: Optional[str] = None
+    observacoes: Optional[str] = None
+
+
+class ContaPagarUpdate(BaseModel):
+    descricao: Optional[str] = None
+    fornecedor: Optional[str] = None
+    valor: Optional[float] = None
+    vencimento: Optional[date] = None
+    forma_pagamento: Optional[str] = None
+    observacoes: Optional[str] = None
+
+
+class FinanceiroOrigemResumo(BaseModel):
+    origem: str
+    valor: float
+
+
+class FinanceiroMovimentacaoRecente(BaseModel):
+    id: int
+    tipo: str
+    descricao: str
+    valor: float
+    origem: str
+    forma_pagamento: Optional[str] = None
+    data: datetime
+
+
+class FinanceiroDashboardResponse(BaseModel):
+    data_inicio: date
+    data_fim: date
+    entradas: float
+    saidas: float
+    saldo: float
+    contas_receber_pendentes: float
+    contas_pagar_pendentes: float
+    contas_receber_vencidas: int
+    contas_pagar_vencidas: int
+    quantidade_movimentacoes: int
+    receitas_por_origem: list[FinanceiroOrigemResumo]
+    despesas_por_origem: list[FinanceiroOrigemResumo]
+    movimentacoes_recentes: list[FinanceiroMovimentacaoRecente]
+
+
+class FluxoCaixaDia(BaseModel):
+    data: date
+    entradas: float
+    saidas: float
+    saldo_dia: float
+    saldo_acumulado: float
+
+
+class FluxoCaixaResponse(BaseModel):
+    data_inicio: date
+    data_fim: date
+    saldo_inicial: float
+    saldo_final: float
+    dias: list[FluxoCaixaDia]
+
+
+class DRESimplificadaResponse(BaseModel):
+    data_inicio: date
+    data_fim: date
+    receita_operacional: float
+    outras_entradas: float
+    receitas_totais: float
+    despesas_operacionais: float
+    outras_saidas: float
+    despesas_totais: float
+    resultado: float
+
+
+class AssinaturaSaaSAuditoriaResponse(BaseModel):
+    id: int
+    assinatura_id: int
+    barbearia_id: int
+    usuario_id: int
+    acao: str
+    observacao: Optional[str] = None
+    status_anterior: Optional[str] = None
+    status_novo: Optional[str] = None
+    criado_em: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ==================================
+# FINANCEIRO GLOBAL DA PLATAFORMA
+# ==================================
+
+class FinanceiroPlataformaMovimentacaoCreate(BaseModel):
+    tipo: Literal["ENTRADA", "SAIDA"]
+
+    categoria: str = Field(
+        min_length=2,
+        max_length=80,
+    )
+
+    descricao: str = Field(
+        min_length=2,
+        max_length=255,
+    )
+
+    valor: float = Field(gt=0)
+
+    data_competencia: datetime
+
+    data_realizacao: datetime | None = None
+
+    forma_pagamento: str | None = Field(
+        default=None,
+        max_length=80,
+    )
+
+    observacao: str | None = None
+
+    status: Literal[
+        "PENDENTE",
+        "REALIZADO",
+        "CANCELADO",
+    ] = "REALIZADO"
+
+    @model_validator(mode="after")
+    def validar_realizacao(self):
+        if (
+            self.status == "REALIZADO"
+            and self.data_realizacao is None
+        ):
+            raise ValueError(
+                "data_realizacao e obrigatoria quando status=REALIZADO."
+            )
+
+        if (
+            self.status != "REALIZADO"
+            and self.data_realizacao is not None
+        ):
+            raise ValueError(
+                "data_realizacao deve ser nula quando status nao for REALIZADO."
+            )
+
+        return self
+
+
+class FinanceiroPlataformaMovimentacaoUpdate(BaseModel):
+    categoria: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=80,
+    )
+
+    descricao: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=255,
+    )
+
+    valor: float | None = Field(
+        default=None,
+        gt=0,
+    )
+
+    data_competencia: datetime | None = None
+
+    data_realizacao: datetime | None = None
+
+    forma_pagamento: str | None = Field(
+        default=None,
+        max_length=80,
+    )
+
+    observacao: str | None = None
+
+    status: Literal[
+        "PENDENTE",
+        "REALIZADO",
+        "CANCELADO",
+    ] | None = None
+
+
+class FinanceiroPlataformaMovimentacaoOut(BaseModel):
+    id: int
+    tipo: str
+    categoria: str
+    descricao: str
+    valor: float
+    data_competencia: datetime
+    data_realizacao: datetime | None
+    forma_pagamento: str | None
+    observacao: str | None
+    status: str
+    usuario_id: int
+    criado_em: datetime
+    atualizado_em: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class FinanceiroPlataformaCategoriaResumo(BaseModel):
+    categoria: str
+    valor: float
+
+
+class FinanceiroPlataformaResumo(BaseModel):
+    data_inicio: date
+    data_fim: date
+
+    receita_saas: float
+    outras_entradas: float
+    entradas_totais: float
+
+    despesas_totais: float
+    taxas_pagamento: float
+    comissoes_parceiros: float
+    impostos: float
+    outras_despesas: float
+
+    resultado_liquido: float
+
+    pendentes_entrada: float
+    pendentes_saida: float
+
+    quantidade_movimentacoes: int
+
+    entradas_por_categoria: list[
+        FinanceiroPlataformaCategoriaResumo
+    ]
+
+    saidas_por_categoria: list[
+        FinanceiroPlataformaCategoriaResumo
+    ]
+
+
+class FinanceiroPlataformaFluxoDia(BaseModel):
+    data: date
+    entradas: float
+    saidas: float
+    resultado_dia: float
+    saldo_acumulado: float
+
+
+class FinanceiroPlataformaFluxoResponse(BaseModel):
+    data_inicio: date
+    data_fim: date
+    saldo_inicial: float
+    saldo_final: float
+    dias: list[FinanceiroPlataformaFluxoDia]
+

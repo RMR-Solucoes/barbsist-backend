@@ -10,6 +10,7 @@ from services.conta_pagar_service import (
     excluir_conta_pagar_service,
     listar_contas_pagar_service,
     pagar_conta_service,
+    atualizar_conta_pagar_service,
 )
 
 
@@ -65,6 +66,24 @@ def buscar_conta_pagar(
     return buscar_conta_pagar_service(
         db=db,
         conta_id=conta_id,
+        usuario_logado=usuario_logado,
+    )
+
+
+@router.patch(
+    "/{conta_id}",
+    response_model=schemas.ContaPagarResponse,
+)
+def atualizar_conta_pagar(
+    conta_id: int,
+    dados: schemas.ContaPagarUpdate,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin_ou_gerente),
+):
+    return atualizar_conta_pagar_service(
+        db=db,
+        conta_id=conta_id,
+        dados=dados,
         usuario_logado=usuario_logado,
     )
 

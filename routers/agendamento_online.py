@@ -368,7 +368,13 @@ def cancelar_agendamento_online(
 
 
 def normalizar_telefone(telefone: str) -> str:
-    return re.sub(r"\D", "", telefone or "")
+    telefone_limpo = re.sub(r"\D", "", telefone or "")
+    if telefone_limpo and len(telefone_limpo) not in (10, 11):
+        raise HTTPException(
+            status_code=400,
+            detail="Telefone inválido. Informe DDD + número.",
+        )
+    return telefone_limpo
 
 
 def buscar_cliente_por_telefone(

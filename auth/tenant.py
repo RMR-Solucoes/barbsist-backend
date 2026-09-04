@@ -9,6 +9,41 @@ import models
 
 PERFIL_SUPERADMIN = "superadmin"
 
+ATRIBUTO_CONTEXTO_SUPERADMIN = "_contexto_barbearia_id"
+
+
+def obter_contexto_superadmin(
+    usuario: models.Usuario | None
+) -> int | None:
+    """
+    Retorna a barbearia selecionada no token contextual do superadmin.
+
+    O valor é transitório e nunca altera usuarios.barbearia_id no banco.
+    """
+
+    if not usuario_eh_superadmin(usuario):
+        return None
+
+    contexto = getattr(
+        usuario,
+        ATRIBUTO_CONTEXTO_SUPERADMIN,
+        None
+    )
+
+    if contexto is None:
+        return None
+
+    try:
+        return int(contexto)
+    except (TypeError, ValueError):
+        return None
+
+
+def superadmin_possui_contexto(
+    usuario: models.Usuario | None
+) -> bool:
+    return obter_contexto_superadmin(usuario) is not None
+
 
 def usuario_eh_superadmin(usuario: models.Usuario | None) -> bool:
     """
@@ -45,6 +80,15 @@ def obter_barbearia_id(
         )
 
     if usuario_eh_superadmin(usuario):
+        contexto_barbearia_id = obter_contexto_superadmin(
+            usuario
+        )
+
+        if contexto_barbearia_id is not None:
+            return contexto_barbearia_id
+
+        # Compatibilidade temporária com bases antigas em que o
+        # superadmin ainda possua barbearia_id gravado.
         if usuario.barbearia_id is not None:
             return usuario.barbearia_id
 
@@ -149,6 +193,7 @@ def aplicar_filtro_barbearia(
         permitir_acesso_global_superadmin
         and usuario_eh_superadmin(usuario)
         and usuario.barbearia_id is None
+        and not superadmin_possui_contexto(usuario)
     ):
         return query
 

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -11,6 +11,7 @@ from services.estilo_service import (
     criar_estilo_service,
     desativar_estilo_service,
     listar_estilos_service,
+    reativar_estilo_service,
 )
 
 
@@ -41,12 +42,14 @@ def criar_estilo(
     response_model=list[EstiloResponse],
 )
 def listar_estilos(
+    apenas_ativos: bool = Query(True),
     db: Session = Depends(get_db),
     usuario_logado=Depends(admin_ou_gerente),
 ):
     return listar_estilos_service(
         db=db,
         usuario_logado=usuario_logado,
+        apenas_ativos=apenas_ativos,
     )
 
 
@@ -95,3 +98,19 @@ def desativar_estilo(
         estilo_id=estilo_id,
         usuario_logado=usuario_logado,
     )
+
+@router.put(
+    "/{estilo_id}/reativar",
+    response_model=EstiloResponse,
+)
+def reativar_estilo(
+    estilo_id: int,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin_ou_gerente),
+):
+    return reativar_estilo_service(
+        db=db,
+        estilo_id=estilo_id,
+        usuario_logado=usuario_logado,
+    )
+

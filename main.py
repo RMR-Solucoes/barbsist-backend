@@ -1,8 +1,14 @@
+import os
+
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from datetime import datetime
 from routers import usuarios, mercado_pago, barbsist_assinaturas, admin_assinaturas_saas, admin_plataforma
+from routers import financeiro_plataforma
+
+from parceiros.router_parceiros import router as parceiros_router
+from parceiros.router_portal_parceiro import router as portal_parceiro_router
 
 from routers import (
     barbearia,
@@ -11,6 +17,7 @@ from routers import (
     servicos,
     produtos,
     comandas,
+    vendas,
     caixa,
     comissoes,
     auth,
@@ -21,7 +28,8 @@ from routers import (
     barbeiro_disponibilidade_router,
     agendamento_online,
     contas_receber,
-    contas_pagar
+    contas_pagar,
+    financeiro
 
 )
 
@@ -55,7 +63,13 @@ from schemas import (
 )
 
 
-Base.metadata.create_all(bind=engine)
+AMBIENTE = os.getenv("AMBIENTE", "desenvolvimento").strip().lower()
+EM_PRODUCAO = AMBIENTE in {"producao", "production", "prod"}
+
+# Em desenvolvimento, facilita a criação inicial do SQLite.
+# Em produção, o schema deve ser controlado por migrações versionadas.
+if not EM_PRODUCAO:
+    Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title="Sistema Barbearia",
@@ -68,6 +82,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
         "https://barbsist-frontend.vercel.app",
         "https://barbsist-frontend-dkpauelg2-aulaipros-projects.vercel.app",
     ],
@@ -102,6 +118,7 @@ app.include_router(barbeiros.router)
 app.include_router(servicos.router)
 app.include_router(produtos.router)
 app.include_router(comandas.router)
+app.include_router(vendas.router)
 app.include_router(caixa.router)
 app.include_router(comissoes.router)
 app.include_router(auth.router)
@@ -114,6 +131,7 @@ app.include_router(agendamento_online.router)
 app.include_router(barbearia.router)
 app.include_router(contas_receber.router)
 app.include_router(contas_pagar.router)
+app.include_router(financeiro.router)
 
 app.include_router(usuarios.router)
 app.include_router(mercado_pago.router)
@@ -121,3 +139,6 @@ app.include_router(mercado_pago.router)
 app.include_router(barbsist_assinaturas.router)
 app.include_router(admin_assinaturas_saas.router)
 app.include_router(admin_plataforma.router)
+app.include_router(financeiro_plataforma.router)
+app.include_router(parceiros_router)
+app.include_router(portal_parceiro_router)

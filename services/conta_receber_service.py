@@ -11,6 +11,10 @@ from auth.tenant import (
 )
 
 from services.caixa_service import _obter_usuario_id, registrar_entrada_caixa
+from services.financeiro_common import (
+    normalizar_forma_pagamento,
+    validar_status_filtro,
+)
 
 
 STATUS_PENDENTE = "PENDENTE"
@@ -63,7 +67,9 @@ def criar_conta_receber_service(
             cliente_id=dados.cliente_id,
             valor=dados.valor,
             vencimento=dados.vencimento,
-            forma_pagamento=dados.forma_pagamento,
+            forma_pagamento=normalizar_forma_pagamento(
+                dados.forma_pagamento
+            ),
             observacoes=dados.observacoes,
             status=STATUS_PENDENTE,
             barbearia_id=obter_barbearia_id(
@@ -103,10 +109,14 @@ def listar_contas_receber_service(
         usuario=usuario_logado,
     )
 
-    if status_filtro:
+    status_normalizado = validar_status_filtro(
+        status_filtro,
+        {STATUS_PENDENTE, STATUS_RECEBIDA},
+    )
+
+    if status_normalizado:
         query = query.filter(
-            models.ContaReceber.status
-            == status_filtro.strip().upper()
+            models.ContaReceber.status == status_normalizado
         )
 
     return (
@@ -141,22 +151,39 @@ def receber_conta_service(
     forma_pagamento: str | None,
     usuario_logado,
 ):
-    conta = buscar_conta_receber_service(
-        db=db,
-        conta_id=conta_id,
-        usuario_logado=usuario_logado,
-    )
-
-    if conta.status == STATUS_RECEBIDA:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Conta já recebida.",
-        )
+    barbearia_id = obter_barbearia_id(usuario_logado)
 
     try:
-        if forma_pagamento and forma_pagamento.strip():
-            conta.forma_pagamento = (
-                forma_pagamento.strip()
+        conta = (
+            db.query(models.ContaReceber)
+            .filter(
+                models.ContaReceber.id == conta_id,
+                models.ContaReceber.barbearia_id == barbearia_id,
+            )
+            .with_for_update()
+            .first()
+        )
+
+        if conta is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Conta a receber não encontrada.",
+            )
+
+        if conta.status == STATUS_RECEBIDA:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Conta já recebida.",
+            )
+
+        if forma_pagamento is not None:
+            conta.forma_pagamento = normalizar_forma_pagamento(
+                forma_pagamento,
+                permitir_none=False,
+            )
+        elif conta.forma_pagamento:
+            conta.forma_pagamento = normalizar_forma_pagamento(
+                conta.forma_pagamento
             )
 
         conta.status = STATUS_RECEBIDA
@@ -164,9 +191,7 @@ def receber_conta_service(
 
         registrar_entrada_caixa(
             db=db,
-            descricao=(
-                f"Recebimento de conta: {conta.descricao}"
-            ),
+            descricao=f"Recebimento de conta: {conta.descricao}",
             valor=conta.valor,
             forma_pagamento=conta.forma_pagamento,
             barbearia_id=conta.barbearia_id,
@@ -178,7 +203,6 @@ def receber_conta_service(
 
         db.commit()
         db.refresh(conta)
-
         return conta
 
     except HTTPException:
@@ -187,12 +211,78 @@ def receber_conta_service(
 
     except Exception as erro:
         db.rollback()
-
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=(
-                f"Erro ao receber conta: {erro}"
-            ),
+            detail=f"Erro ao receber conta: {erro}",
+        )
+
+
+def atualizar_conta_receber_service(
+    db,
+    conta_id: int,
+    dados,
+    usuario_logado,
+):
+    conta = buscar_conta_receber_service(
+        db=db,
+        conta_id=conta_id,
+        usuario_logado=usuario_logado,
+    )
+
+    if conta.status != STATUS_PENDENTE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Somente contas pendentes podem ser editadas.",
+        )
+
+    if dados.descricao is not None:
+        descricao = dados.descricao.strip()
+        if not descricao:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A descrição é obrigatória.",
+            )
+        conta.descricao = descricao
+
+    if dados.valor is not None:
+        _validar_valor(dados.valor)
+        conta.valor = dados.valor
+
+    if dados.vencimento is not None:
+        conta.vencimento = dados.vencimento
+
+    if dados.cliente_id is not None:
+        cliente = buscar_da_barbearia(
+            db=db,
+            model=models.Cliente,
+            registro_id=dados.cliente_id,
+            usuario=usuario_logado,
+            mensagem_nao_encontrado="Cliente não encontrado.",
+        )
+        if not cliente.ativo:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cliente inativo.",
+            )
+        conta.cliente_id = dados.cliente_id
+
+    if dados.forma_pagamento is not None:
+        conta.forma_pagamento = normalizar_forma_pagamento(
+            dados.forma_pagamento
+        )
+
+    if dados.observacoes is not None:
+        conta.observacoes = dados.observacoes.strip() or None
+
+    try:
+        db.commit()
+        db.refresh(conta)
+        return conta
+    except Exception as erro:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erro ao atualizar conta a receber: {erro}",
         )
 
 

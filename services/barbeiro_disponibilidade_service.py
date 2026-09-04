@@ -7,6 +7,7 @@ from auth.tenant import (
     obter_barbearia_id,
 )
 from schemas import BarbeiroDisponibilidadeUpdate
+from services.disponibilidade_service import validar_intervalo_horario
 
 
 def criar_disponibilidade_padrao_por_barbearia(
@@ -160,6 +161,14 @@ def atualizar_disponibilidade(
         usuario=usuario_logado,
         mensagem_nao_encontrado="Disponibilidade não encontrada.",
     )
+
+    novo_usa_padrao = dados.usa_padrao if dados.usa_padrao is not None else disponibilidade.usa_padrao
+    novo_trabalha = dados.trabalha if dados.trabalha is not None else disponibilidade.trabalha
+    nova_hora_inicio = dados.hora_inicio if dados.hora_inicio is not None else disponibilidade.hora_inicio
+    nova_hora_fim = dados.hora_fim if dados.hora_fim is not None else disponibilidade.hora_fim
+
+    if novo_usa_padrao is False and novo_trabalha:
+        validar_intervalo_horario(nova_hora_inicio, nova_hora_fim)
 
     if dados.usa_padrao is not None:
         disponibilidade.usa_padrao = dados.usa_padrao

@@ -137,6 +137,37 @@ def criar_movimentacao_caixa(
         descricao or ""
     ).strip()
 
+    origem_normalizada = _normalizar_origem(origem)
+
+    origens_idempotentes = {
+        "COMANDA",
+        "CONTA_RECEBER",
+        "CONTA_PAGAR",
+    }
+
+    if (
+        origem_normalizada in origens_idempotentes
+        and referencia_id is not None
+    ):
+        existente = (
+            db.query(models.Caixa)
+            .filter(
+                models.Caixa.barbearia_id == barbearia_id,
+                models.Caixa.origem == origem_normalizada,
+                models.Caixa.referencia_id == referencia_id,
+            )
+            .first()
+        )
+
+        if existente is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Já existe lançamento automático no Caixa "
+                    "para esta origem e referência."
+                ),
+            )
+
     if not descricao_normalizada:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -155,7 +186,7 @@ def criar_movimentacao_caixa(
                 forma_pagamento
             )
         ),
-        origem=_normalizar_origem(origem),
+        origem=origem_normalizada,
         referencia_id=referencia_id,
         status=_normalizar_status(
             status_movimentacao

@@ -15,13 +15,22 @@ from database import get_db
 import models
 
 
-load_dotenv(override=True)
+load_dotenv()
 
 
-SECRET_KEY = os.getenv(
-    "SECRET_KEY",
-    "barbsist-chave-temporaria-dev"
-)
+AMBIENTE = os.getenv("AMBIENTE", "desenvolvimento").strip().lower()
+EM_PRODUCAO = AMBIENTE in {"producao", "production", "prod"}
+
+SECRET_KEY = os.getenv("SECRET_KEY")
+
+if not SECRET_KEY:
+    if EM_PRODUCAO:
+        raise RuntimeError(
+            "SECRET_KEY não configurada. "
+            "A aplicação não pode iniciar em produção sem uma chave JWT segura."
+        )
+
+    SECRET_KEY = "barbsist-chave-temporaria-dev"
 
 ALGORITHM = "HS256"
 
@@ -34,8 +43,13 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(
 
 SEGURANCA_ATIVA = os.getenv(
     "SEGURANCA_ATIVA",
-    "false"
+    "true"
 ).lower() == "true"
+
+if EM_PRODUCAO and not SEGURANCA_ATIVA:
+    raise RuntimeError(
+        "SEGURANCA_ATIVA não pode ser false em produção."
+    )
 
 
 pwd_context = CryptContext(
@@ -104,8 +118,8 @@ def obter_usuario_logado(
     """
     Valida o token JWT, o usuário e o vínculo com a barbearia.
 
-    Durante a transição, quando SEGURANCA_ATIVA=false e
-    nenhum token é enviado, retorna None.
+    Em produção, a autenticação é obrigatória.
+    O modo sem autenticação é permitido apenas em desenvolvimento controlado.
     """
 
     token = (
@@ -114,7 +128,7 @@ def obter_usuario_logado(
         else None
     )
 
-    if not SEGURANCA_ATIVA and not token:
+    if not SEGURANCA_ATIVA and not EM_PRODUCAO and not token:
         return None
 
     if not token:
@@ -138,6 +152,9 @@ def obter_usuario_logado(
             "barbearia_id"
         )
         perfil_token = payload.get("perfil")
+        contexto_barbearia_id = payload.get(
+            "contexto_barbearia_id"
+        )
 
         if usuario_id is None or perfil_token is None:
             raise erro_token_invalido()
@@ -157,6 +174,17 @@ def obter_usuario_logado(
             try:
                 barbearia_id_token = int(
                     barbearia_id_token
+                )
+            except (TypeError, ValueError):
+                raise erro_token_invalido()
+
+        if contexto_barbearia_id is not None:
+            if perfil_token != "superadmin":
+                raise erro_token_invalido()
+
+            try:
+                contexto_barbearia_id = int(
+                    contexto_barbearia_id
                 )
             except (TypeError, ValueError):
                 raise erro_token_invalido()
@@ -198,6 +226,36 @@ def obter_usuario_logado(
         )
 
     if usuario.perfil == "superadmin":
+        # O superadmin permanece global no banco. Quando o token
+        # possui contexto, a barbearia é validada e anexada apenas
+        # à instância desta requisição.
+        if contexto_barbearia_id is not None:
+            barbearia_contexto = db.query(
+                models.Barbearia
+            ).filter(
+                models.Barbearia.id == contexto_barbearia_id
+            ).first()
+
+            if not barbearia_contexto:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Barbearia de contexto não encontrada."
+                )
+
+            if not barbearia_contexto.ativa:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "A barbearia selecionada está inativa."
+                    )
+                )
+
+            setattr(
+                usuario,
+                "_contexto_barbearia_id",
+                contexto_barbearia_id
+            )
+
         return usuario
 
     if usuario.barbearia_id is None:

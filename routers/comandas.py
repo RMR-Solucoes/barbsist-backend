@@ -32,8 +32,8 @@ from services.comanda_service import (
 )
 
 from services.estoque_service import (
-    validar_estoque,
-    baixar_estoque
+    baixar_estoque,
+    obter_produto_para_movimentacao,
 )
 
 from auth.permissions import (
@@ -56,6 +56,25 @@ router = APIRouter(
     tags=["Comandas"]
 )
 
+
+def _validar_acesso_barbeiro(
+    usuario_logado,
+    comanda,
+):
+    perfil = (getattr(usuario_logado, "perfil", "") or "").lower()
+
+    if perfil != "barbeiro":
+        return
+
+    if (
+        getattr(usuario_logado, "barbeiro_id", None)
+        != comanda.barbeiro_id
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="O barbeiro só pode operar suas próprias comandas.",
+        )
+
 @router.post(
     "",
     response_model=ComandaResponse
@@ -71,21 +90,57 @@ def abrir_comanda(
         usuario_logado
     )
 
-    barbeiro = buscar_da_barbearia(
-        db=db,
-        model=models.Barbeiro,
-        registro_id=comanda.barbeiro_id,
-        usuario=usuario_logado,
-        mensagem_nao_encontrado=(
-            "Barbeiro não encontrado ou inativo."
-        )
-    )
+    perfil = (
+        getattr(usuario_logado, "perfil", "") or ""
+    ).lower()
 
-    if not barbeiro.ativo:
-        raise HTTPException(
-            status_code=404,
-            detail="Barbeiro não encontrado ou inativo."
+    barbeiro_id = None
+
+    if perfil == "barbeiro":
+        barbeiro_usuario_id = getattr(
+            usuario_logado,
+            "barbeiro_id",
+            None,
         )
+
+        if barbeiro_usuario_id is None:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Usuario barbeiro sem vinculo "
+                    "com barbeiro."
+                ),
+            )
+
+        if comanda.barbeiro_id != barbeiro_usuario_id:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "O barbeiro so pode abrir "
+                    "comanda para si proprio."
+                ),
+            )
+
+    if comanda.barbeiro_id is not None:
+        barbeiro = buscar_da_barbearia(
+            db=db,
+            model=models.Barbeiro,
+            registro_id=comanda.barbeiro_id,
+            usuario=usuario_logado,
+            mensagem_nao_encontrado=(
+                "Barbeiro nao encontrado ou inativo."
+            )
+        )
+
+        if not barbeiro.ativo:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "Barbeiro nao encontrado ou inativo."
+                )
+            )
+
+        barbeiro_id = barbeiro.id
 
     cliente_id = None
 
@@ -110,7 +165,7 @@ def abrir_comanda(
 
     nova_comanda = models.Comanda(
         cliente_id=cliente_id,
-        barbeiro_id=barbeiro.id,
+        barbeiro_id=barbeiro_id,
         status="aberta",
         total=0,
         barbearia_id=barbearia_id
@@ -133,12 +188,34 @@ def listar_comandas(
         admin_gerente_recepcao_ou_barbeiro
     )
 ):
-    return (
-        consultar_da_barbearia(
-            db=db,
-            model=models.Comanda,
-            usuario=usuario_logado
+    query = consultar_da_barbearia(
+        db=db,
+        model=models.Comanda,
+        usuario=usuario_logado,
+    )
+
+    if (
+        (getattr(usuario_logado, "perfil", "") or "").lower()
+        == "barbeiro"
+    ):
+        barbeiro_id = getattr(
+            usuario_logado,
+            "barbeiro_id",
+            None,
         )
+
+        if barbeiro_id is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Usuário barbeiro sem vínculo com barbeiro.",
+            )
+
+        query = query.filter(
+            models.Comanda.barbeiro_id == barbeiro_id
+        )
+
+    return (
+        query
         .options(
             joinedload(models.Comanda.cliente),
             joinedload(models.Comanda.barbeiro),
@@ -220,6 +297,11 @@ def buscar_comanda(
             detail="Comanda não encontrada."
         )
 
+    _validar_acesso_barbeiro(
+        usuario_logado,
+        comanda,
+    )
+
     return comanda
 
 
@@ -233,6 +315,11 @@ def consultar_assinatura_da_comanda(
         admin_gerente_recepcao_ou_barbeiro
     )
 ):
+    _validar_acesso_barbeiro(
+        usuario_logado,
+        comanda,
+    )
+
     return obter_assinatura_disponivel_comanda_service(
         db=db,
         comanda_id=comanda_id,
@@ -271,12 +358,26 @@ def adicionar_servico_na_comanda(
         )
     )
 
+    _validar_acesso_barbeiro(
+        usuario_logado,
+        comanda,
+    )
+
     if comanda.status != "aberta":
         raise HTTPException(
             status_code=404,
             detail=(
                 "Comanda não encontrada ou já fechada."
             )
+        )
+
+    if comanda.barbeiro_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Informe um barbeiro antes de "
+                "adicionar servicos a comanda."
+            ),
         )
 
     servico = buscar_da_barbearia(
@@ -353,6 +454,11 @@ def adicionar_produto_na_comanda(
         )
     )
 
+    _validar_acesso_barbeiro(
+        usuario_logado,
+        comanda,
+    )
+
     if comanda.status != "aberta":
         raise HTTPException(
             status_code=404,
@@ -361,25 +467,10 @@ def adicionar_produto_na_comanda(
             )
         )
 
-    produto = buscar_da_barbearia(
-        db=db,
-        model=models.Produto,
-        registro_id=item.produto_id,
-        usuario=usuario_logado,
-        mensagem_nao_encontrado=(
-            "Produto não encontrado ou inativo."
-        )
-    )
-
-    if not produto.ativo:
-        raise HTTPException(
-            status_code=404,
-            detail="Produto não encontrado ou inativo."
-        )
-
-    validar_estoque(
-        produto=produto,
-        quantidade=item.quantidade
+    produto = obter_produto_para_movimentacao(
+        db,
+        produto_id=item.produto_id,
+        barbearia_id=comanda.barbearia_id,
     )
 
     subtotal = (
@@ -434,6 +525,11 @@ def listar_itens_da_comanda(
         mensagem_nao_encontrado=(
             "Comanda não encontrada."
         )
+    )
+
+    _validar_acesso_barbeiro(
+        usuario_logado,
+        comanda,
     )
 
     return (

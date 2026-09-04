@@ -13,11 +13,17 @@ from schemas import (
     RedefinirSenhaRequest,
     TokenResponse,
     UsuarioResponse,
+    SuperadminContextoTokenResponse,
 )
 
-from auth.auth_service import login_service
+from auth.auth_service import (
+    login_service,
+    selecionar_contexto_superadmin_service,
+    limpar_contexto_superadmin_service,
+)
 from auth.cadastro_service import cadastrar_barbearia_service
 from auth.dependencies import get_usuario_logado
+from auth.permissions import superadmin
 from auth.password_service import (
     alterar_minha_senha_service,
     redefinir_senha_service,
@@ -119,3 +125,40 @@ def redefinir_senha(
         confirmar_nova_senha=dados.confirmar_nova_senha,
         db=db,
     )
+
+@router.post(
+    "/superadmin/contexto/{barbearia_id}",
+    response_model=SuperadminContextoTokenResponse,
+)
+def selecionar_contexto_superadmin(
+    barbearia_id: int,
+    db: Session = Depends(get_db),
+    usuario=Depends(superadmin),
+):
+    """
+    Seleciona explicitamente a barbearia em que o superadmin atuará.
+
+    Retorna um novo token JWT contextual. O registro do superadmin
+    permanece global, com usuarios.barbearia_id = NULL.
+    """
+    return selecionar_contexto_superadmin_service(
+        db=db,
+        usuario_logado=usuario,
+        barbearia_id=barbearia_id,
+    )
+
+
+@router.delete(
+    "/superadmin/contexto",
+    response_model=SuperadminContextoTokenResponse,
+)
+def limpar_contexto_superadmin(
+    usuario=Depends(superadmin),
+):
+    """
+    Retorna o superadmin ao contexto global da plataforma.
+    """
+    return limpar_contexto_superadmin_service(
+        usuario_logado=usuario,
+    )
+

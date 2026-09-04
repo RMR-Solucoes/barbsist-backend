@@ -13,6 +13,7 @@ from auth.security import (
     criar_hash_senha,
     verificar_senha,
 )
+from auth.usuario_service import validar_senha
 
 from auth.email_service import (
     ErroEnvioEmail,
@@ -26,10 +27,11 @@ RECUPERACAO_SENHA_EXPIRA_MINUTOS = int(
     )
 )
 
-FRONTEND_URL = os.getenv(
-    "FRONTEND_URL",
-    "http://localhost:3000",
-).rstrip("/")
+FRONTEND_URL = (
+    os.getenv("FRONTEND_PUBLIC_URL")
+    or os.getenv("FRONTEND_URL")
+    or "http://localhost:3000"
+).strip().rstrip("/")
 
 
 MENSAGEM_RECUPERACAO = (
@@ -40,47 +42,9 @@ MENSAGEM_RECUPERACAO = (
 
 def validar_nova_senha(nova_senha: str):
     """
-    Valida os requisitos mínimos de segurança da senha.
+    Mantém compatibilidade interna usando a política única do BarbSist.
     """
-
-    if not nova_senha:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A nova senha é obrigatória.",
-        )
-
-    if len(nova_senha) < 8:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "A senha deve possuir pelo menos "
-                "8 caracteres."
-            ),
-        )
-
-    if not any(
-        caractere.isalpha()
-        for caractere in nova_senha
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "A senha deve possuir pelo menos "
-                "uma letra."
-            ),
-        )
-
-    if not any(
-        caractere.isdigit()
-        for caractere in nova_senha
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "A senha deve possuir pelo menos "
-                "um número."
-            ),
-        )
+    validar_senha(nova_senha)
 
 
 def gerar_hash_token(token: str) -> str:
@@ -350,30 +314,43 @@ def redefinir_senha_service(
             detail="Token de recuperação expirado.",
         )
 
-    barbearia = db.query(
-        models.Barbearia
-    ).filter(
-        models.Barbearia.id == registro.barbearia_id,
-        models.Barbearia.ativa.is_(True),
-    ).first()
+    if registro.barbearia_id is None:
+        # Superadmin global: não possui vínculo com barbearia.
+        usuario = db.query(
+            models.Usuario
+        ).filter(
+            models.Usuario.id == registro.usuario_id,
+            models.Usuario.barbearia_id.is_(None),
+            models.Usuario.perfil == "superadmin",
+            models.Usuario.ativo.is_(True),
+        ).first()
 
-    usuario = db.query(
-        models.Usuario
-    ).filter(
-        models.Usuario.id == registro.usuario_id,
-        models.Usuario.barbearia_id
-        == registro.barbearia_id,
-        models.Usuario.ativo.is_(True),
-    ).first()
+        if usuario is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Não foi possível concluir a recuperação da senha.",
+            )
+    else:
+        barbearia = db.query(
+            models.Barbearia
+        ).filter(
+            models.Barbearia.id == registro.barbearia_id,
+            models.Barbearia.ativa.is_(True),
+        ).first()
 
-    if barbearia is None or usuario is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Não foi possível concluir "
-                "a recuperação da senha."
-            ),
-        )
+        usuario = db.query(
+            models.Usuario
+        ).filter(
+            models.Usuario.id == registro.usuario_id,
+            models.Usuario.barbearia_id == registro.barbearia_id,
+            models.Usuario.ativo.is_(True),
+        ).first()
+
+        if barbearia is None or usuario is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Não foi possível concluir a recuperação da senha.",
+            )
 
     if verificar_senha(
         nova_senha,

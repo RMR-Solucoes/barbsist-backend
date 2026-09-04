@@ -1,13 +1,11 @@
 from fastapi import Depends, HTTPException
 
-from auth.security import obter_usuario_logado, SEGURANCA_ATIVA
+from auth.security import obter_usuario_logado
+from auth.tenant import superadmin_possui_contexto
 
 
 def permitir_perfis(perfis_permitidos: list[str]):
     def verificar(usuario=Depends(obter_usuario_logado)):
-
-        if not SEGURANCA_ATIVA:
-            return usuario
 
         if usuario is None:
             raise HTTPException(
@@ -15,13 +13,23 @@ def permitir_perfis(perfis_permitidos: list[str]):
                 detail="Usuário não autenticado"
             )
 
-        if usuario.perfil not in perfis_permitidos:
-            raise HTTPException(
-                status_code=403,
-                detail="Acesso não autorizado para este perfil"
-            )
+        if usuario.perfil in perfis_permitidos:
+            return usuario
 
-        return usuario
+        # Um superadmin somente assume permissões administrativas
+        # de uma barbearia quando existe contexto explícito e a rota
+        # já permite o perfil "admin".
+        if (
+            usuario.perfil == "superadmin"
+            and "admin" in perfis_permitidos
+            and superadmin_possui_contexto(usuario)
+        ):
+            return usuario
+
+        raise HTTPException(
+            status_code=403,
+            detail="Acesso não autorizado para este perfil"
+        )
 
     return verificar
 

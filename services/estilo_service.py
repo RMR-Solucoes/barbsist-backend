@@ -220,3 +220,45 @@ def desativar_estilo_service(
             status_code=500,
             detail=f"Erro ao desativar estilo: {erro}",
         )
+
+def reativar_estilo_service(
+    db,
+    estilo_id: int,
+    usuario_logado,
+):
+    estilo = buscar_estilo_service(
+        db=db,
+        estilo_id=estilo_id,
+        usuario_logado=usuario_logado,
+        exigir_ativo=False,
+    )
+
+    if estilo.ativo:
+        return estilo
+
+    duplicado = (
+        consultar_da_barbearia(
+            db=db,
+            model=models.Estilo,
+            usuario=usuario_logado,
+        )
+        .filter(
+            models.Estilo.id != estilo.id,
+            models.Estilo.nome == estilo.nome,
+            models.Estilo.categoria == estilo.categoria,
+            models.Estilo.ativo.is_(True),
+        )
+        .first()
+    )
+
+    if duplicado:
+        raise HTTPException(
+            status_code=400,
+            detail="Já existe um estilo ativo com este nome e categoria.",
+        )
+
+    estilo.ativo = True
+    db.commit()
+    db.refresh(estilo)
+    return estilo
+

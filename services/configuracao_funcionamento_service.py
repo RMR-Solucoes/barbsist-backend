@@ -7,6 +7,7 @@ from auth.tenant import (
     obter_barbearia_id,
 )
 from schemas import ConfiguracaoFuncionamentoUpdate
+from services.disponibilidade_service import validar_intervalo_horario
 
 
 def criar_configuracao_padrao_por_barbearia(
@@ -135,6 +136,11 @@ def atualizar_configuracao(
         usuario=usuario_logado,
         mensagem_nao_encontrado="Configuração não encontrada.",
     )
+
+    nova_hora_inicio = dados.hora_inicio if dados.hora_inicio is not None else config.hora_inicio
+    nova_hora_fim = dados.hora_fim if dados.hora_fim is not None else config.hora_fim
+    if (dados.trabalha if dados.trabalha is not None else config.trabalha):
+        validar_intervalo_horario(nova_hora_inicio, nova_hora_fim)
 
     if dados.trabalha is not None:
         config.trabalha = dados.trabalha
