@@ -469,7 +469,7 @@ def criar_assinatura_service(
                 models.Cliente.barbearia_id == barbearia_id,
                 models.Cliente.ativo.is_(True),
             )
-            .with_for_update()
+            .with_for_update(of=models.Cliente)
             .first()
         )
 
