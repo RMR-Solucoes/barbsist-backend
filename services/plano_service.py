@@ -1174,7 +1174,7 @@ def confirmar_pagamento_assinatura_service(
                 models.AssinaturaCliente.barbearia_id
                 == assinatura.barbearia_id,
             )
-            .with_for_update()
+            .with_for_update(of=models.AssinaturaCliente)
             .first()
         )
 
