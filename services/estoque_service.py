@@ -37,7 +37,7 @@ def obter_produto_para_movimentacao(
             models.Produto.barbearia_id == barbearia_id,
             models.Produto.ativo.is_(True),
         )
-        .with_for_update()
+        .with_for_update(of=models.Produto)
         .first()
     )
 
