@@ -135,6 +135,32 @@ def main():
     )
 
     # -------------------------
+    # NULLABLE COMANDAS
+    # -------------------------
+
+    if dialect == "postgresql":
+        with engine.begin() as conn:
+            conn.execute(text(
+                "ALTER TABLE comandas "
+                "ALTER COLUMN cliente_id DROP NOT NULL"
+            ))
+
+            conn.execute(text(
+                "ALTER TABLE comandas "
+                "ALTER COLUMN barbeiro_id DROP NOT NULL"
+            ))
+
+        print(
+            "[OK] PostgreSQL: comandas.cliente_id "
+            "e comandas.barbeiro_id aceitam NULL."
+        )
+    else:
+        print(
+            "[OK] SQLite: ajuste de nullable de comandas "
+            "nao requer ALTER COLUMN."
+        )
+
+    # -------------------------
     # INDICES
     # -------------------------
 
