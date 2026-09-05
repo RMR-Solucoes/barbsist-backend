@@ -315,6 +315,14 @@ def consultar_assinatura_da_comanda(
         admin_gerente_recepcao_ou_barbeiro
     )
 ):
+    comanda = buscar_da_barbearia(
+        db=db,
+        model=models.Comanda,
+        registro_id=comanda_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado="Comanda n?o encontrada."
+    )
+
     _validar_acesso_barbeiro(
         usuario_logado,
         comanda,
