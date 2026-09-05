@@ -460,6 +460,9 @@ class UsuarioResponse(BaseModel):
     barbearia_id: int | None = None
     barbeiro_id: int | None = None
 
+    contexto_barbearia_id: int | None = None
+    contexto_barbearia_slug: str | None = None
+
     ativo: bool
 
     class Config:

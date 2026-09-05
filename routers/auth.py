@@ -75,7 +75,29 @@ def cadastrar_barbearia(
 def usuario_logado(
     usuario=Depends(get_usuario_logado),
 ):
-    return usuario
+    resposta = UsuarioResponse.model_validate(usuario)
+
+    contexto_barbearia_id = getattr(
+        usuario,
+        "_contexto_barbearia_id",
+        None,
+    )
+
+    if contexto_barbearia_id is None:
+        return resposta
+
+    contexto_barbearia_slug = getattr(
+        usuario,
+        "_contexto_barbearia_slug",
+        None,
+    )
+
+    return resposta.model_copy(
+        update={
+            "contexto_barbearia_id": contexto_barbearia_id,
+            "contexto_barbearia_slug": contexto_barbearia_slug,
+        }
+    )
 
 
 @router.put(

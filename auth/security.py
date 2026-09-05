@@ -256,6 +256,12 @@ def obter_usuario_logado(
                 contexto_barbearia_id
             )
 
+            setattr(
+                usuario,
+                "_contexto_barbearia_slug",
+                barbearia_contexto.slug
+            )
+
         return usuario
 
     if usuario.barbearia_id is None:
