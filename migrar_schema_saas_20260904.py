@@ -1,10 +1,11 @@
-﻿"""
+"""
 Migração incremental do schema SaaS BarbSist.
 
 Sincroniza colunas adicionadas aos modelos:
 - planos_saas
 - assinaturas_saas
 - pagamentos_saas
+- comandas
 
 Idempotente: somente adiciona colunas ausentes.
 Compatível com SQLite local e PostgreSQL/Railway.
@@ -46,6 +47,8 @@ def main():
         "planos_saas",
         "assinaturas_saas",
         "pagamentos_saas",
+        "comandas",
+        "agendamentos",
     }
 
     faltantes = obrigatorias - tabelas
@@ -120,10 +123,29 @@ def main():
     )
 
     # -------------------------
+    # COMANDAS / AGENDAMENTOS
+    # -------------------------
+
+    adicionar(
+        "comandas",
+        "agendamento_id",
+        (
+            "INTEGER NULL REFERENCES agendamentos(id)"
+        ),
+    )
+
+    # -------------------------
     # INDICES
     # -------------------------
 
     with engine.begin() as conn:
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS "
+            "ix_comandas_agendamento_id "
+            "ON comandas (agendamento_id) "
+            "WHERE agendamento_id IS NOT NULL"
+        ))
+
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS "
             "ix_assinaturas_saas_promocao_codigo "
