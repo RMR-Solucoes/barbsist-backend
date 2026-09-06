@@ -913,6 +913,8 @@ def _processar_order_webhook(
         f"método={c.payment_method_id or ''}"
     )
 
+    pagamento_duplicado = False
+
     try:
         confirmar_pagamento_assinatura_service(
             db,
@@ -930,6 +932,9 @@ def _processar_order_webhook(
             db.rollback()
             raise
 
+        pagamento_duplicado = True
+        c.status_detail = "pagamento_duplicado_referencia"
+
     c.processado = True
     c.processado_em = datetime.now()
     db.commit()
@@ -941,6 +946,7 @@ def _processar_order_webhook(
         "origem_id": aid,
         "order_id": c.order_id,
         "payment_id": c.payment_id,
+        "pagamento_duplicado": pagamento_duplicado,
     }
 
 def processar_webhook_global_service(db, data_id, payload, xs, xr):
