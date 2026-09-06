@@ -840,10 +840,28 @@ def usar_plano_service(
 # PAGAMENTOS DE PLANOS
 # =========================
 
+def selecionar_plano_para_cobranca_service(
+    db,
+    assinatura,
+    usuario_logado,
+):
+    plano_id_cobranca = (
+        assinatura.plano_programado_id
+        or assinatura.plano_id
+    )
+
+    return buscar_plano_service(
+        db=db,
+        plano_id=plano_id_cobranca,
+        usuario_logado=usuario_logado,
+        exigir_ativo=True,
+    )
+
+
 def registrar_pagamento_plano_service(db, dados, usuario_logado):
     try:
         assinatura = buscar_da_barbearia(db=db, model=models.AssinaturaCliente, registro_id=dados.assinatura_id, usuario=usuario_logado, mensagem_nao_encontrado="Assinatura não encontrada.")
-        plano = buscar_plano_service(db=db, plano_id=assinatura.plano_id, usuario_logado=usuario_logado, exigir_ativo=True)
+        plano = selecionar_plano_para_cobranca_service(db, assinatura, usuario_logado)
         return confirmar_pagamento_assinatura_service(
             db=db, assinatura=assinatura, plano=plano, forma_pagamento=(dados.forma_pagamento or "PIX").upper(),
             observacoes="Pagamento manual confirmado no BarbSist", usuario_id=getattr(usuario_logado, "id", None),
@@ -933,10 +951,220 @@ def listar_pagamentos_cliente_service(
 # RENOVAÇÃO DE ASSINATURA
 # =========================
 
+
+
+def _registrar_auditoria_troca_plano(
+    db,
+    assinatura,
+    plano_anterior_id: int,
+    plano_novo_id: int,
+    usuario_logado,
+    acao: str,
+    observacoes: str | None = None,
+):
+    registro = models.AssinaturaClienteTrocaPlano(
+        assinatura_id=assinatura.id,
+        barbearia_id=assinatura.barbearia_id,
+        plano_anterior_id=plano_anterior_id,
+        plano_novo_id=plano_novo_id,
+        usuario_id=getattr(usuario_logado, "id", None),
+        acao=acao,
+        observacoes=_normalizar_texto(observacoes),
+    )
+    db.add(registro)
+    return registro
+
+
+def solicitar_troca_plano_service(
+    db,
+    assinatura_id: int,
+    dados,
+    usuario_logado,
+):
+    try:
+        assinatura = buscar_da_barbearia(
+            db=db,
+            model=models.AssinaturaCliente,
+            registro_id=assinatura_id,
+            usuario=usuario_logado,
+            mensagem_nao_encontrado="Assinatura nao encontrada.",
+        )
+
+        status_atual = (assinatura.status or "").upper()
+        if status_atual in {STATUS_CANCELADO, STATUS_ENCERRADO, STATUS_INATIVO}:
+            raise HTTPException(
+                status_code=400,
+                detail="Esta assinatura nao permite troca de plano.",
+            )
+
+        novo_plano = buscar_plano_service(
+            db=db,
+            plano_id=dados.plano_id,
+            usuario_logado=usuario_logado,
+            exigir_ativo=True,
+        )
+
+        plano_atual_id = int(assinatura.plano_id)
+        novo_plano_id = int(novo_plano.id)
+
+        if novo_plano_id == plano_atual_id:
+            raise HTTPException(
+                status_code=400,
+                detail="O plano selecionado ja e o plano atual da assinatura.",
+            )
+
+        if assinatura.plano_programado_id == novo_plano_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Este plano ja esta programado para o proximo ciclo.",
+            )
+
+        possui_pagamento = (
+            db.query(models.PagamentoPlano.id)
+            .filter(
+                models.PagamentoPlano.assinatura_id == assinatura.id,
+                models.PagamentoPlano.status == PAGAMENTO_PAGO,
+            )
+            .first()
+            is not None
+        )
+
+        observacoes = getattr(dados, "observacoes", None)
+
+        if not possui_pagamento and assinatura.data_ultimo_pagamento is None:
+            assinatura.plano_id = novo_plano_id
+            assinatura.valor_mensal = novo_plano.valor
+            assinatura.data_fim = assinatura.data_inicio + timedelta(
+                days=novo_plano.validade_dias
+            )
+            assinatura.usos_disponiveis = 0
+            assinatura.plano_programado_id = None
+            assinatura.troca_plano_solicitada_em = None
+            assinatura.troca_plano_usuario_id = None
+
+            _registrar_auditoria_troca_plano(
+                db=db,
+                assinatura=assinatura,
+                plano_anterior_id=plano_atual_id,
+                plano_novo_id=novo_plano_id,
+                usuario_logado=usuario_logado,
+                acao="TROCA_IMEDIATA_ANTES_PAGAMENTO",
+                observacoes=observacoes,
+            )
+        else:
+            assinatura.plano_programado_id = novo_plano_id
+            assinatura.troca_plano_solicitada_em = datetime.now()
+            assinatura.troca_plano_usuario_id = getattr(
+                usuario_logado,
+                "id",
+                None,
+            )
+
+            _registrar_auditoria_troca_plano(
+                db=db,
+                assinatura=assinatura,
+                plano_anterior_id=plano_atual_id,
+                plano_novo_id=novo_plano_id,
+                usuario_logado=usuario_logado,
+                acao="TROCA_PROGRAMADA",
+                observacoes=observacoes,
+            )
+
+        db.commit()
+        db.refresh(assinatura)
+        return assinatura
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as erro:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao solicitar troca de plano: {str(erro)}",
+        )
+
+
+def cancelar_troca_plano_service(
+    db,
+    assinatura_id: int,
+    usuario_logado,
+):
+    try:
+        assinatura = buscar_da_barbearia(
+            db=db,
+            model=models.AssinaturaCliente,
+            registro_id=assinatura_id,
+            usuario=usuario_logado,
+            mensagem_nao_encontrado="Assinatura nao encontrada.",
+        )
+
+        plano_programado_id = assinatura.plano_programado_id
+        if plano_programado_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="A assinatura nao possui troca de plano programada.",
+            )
+
+        _registrar_auditoria_troca_plano(
+            db=db,
+            assinatura=assinatura,
+            plano_anterior_id=assinatura.plano_id,
+            plano_novo_id=plano_programado_id,
+            usuario_logado=usuario_logado,
+            acao="TROCA_PROGRAMADA_CANCELADA",
+            observacoes="Troca programada cancelada antes da efetivacao.",
+        )
+
+        assinatura.plano_programado_id = None
+        assinatura.troca_plano_solicitada_em = None
+        assinatura.troca_plano_usuario_id = None
+
+        db.commit()
+        db.refresh(assinatura)
+        return assinatura
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as erro:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao cancelar troca de plano: {str(erro)}",
+        )
+
+
+def listar_historico_troca_plano_service(
+    db,
+    assinatura_id: int,
+    usuario_logado,
+):
+    assinatura = buscar_da_barbearia(
+        db=db,
+        model=models.AssinaturaCliente,
+        registro_id=assinatura_id,
+        usuario=usuario_logado,
+        mensagem_nao_encontrado="Assinatura nao encontrada.",
+    )
+
+    return (
+        db.query(models.AssinaturaClienteTrocaPlano)
+        .filter(
+            models.AssinaturaClienteTrocaPlano.assinatura_id
+            == assinatura.id,
+            models.AssinaturaClienteTrocaPlano.barbearia_id
+            == assinatura.barbearia_id,
+        )
+        .order_by(models.AssinaturaClienteTrocaPlano.id.desc())
+        .all()
+    )
+
+
 def renovar_assinatura_service(db, assinatura_id: int, dados, usuario_logado):
     try:
         assinatura = buscar_da_barbearia(db=db, model=models.AssinaturaCliente, registro_id=assinatura_id, usuario=usuario_logado, mensagem_nao_encontrado="Assinatura não encontrada.")
-        plano = buscar_plano_service(db=db, plano_id=assinatura.plano_id, usuario_logado=usuario_logado, exigir_ativo=True)
+        plano = selecionar_plano_para_cobranca_service(db, assinatura, usuario_logado)
         return confirmar_pagamento_assinatura_service(
             db=db, assinatura=assinatura, plano=plano, forma_pagamento=(dados.forma_pagamento or "PIX").upper(),
             observacoes=getattr(dados, "observacoes", None) or "Renovação manual do plano", usuario_id=getattr(usuario_logado, "id", None),
@@ -1163,6 +1391,7 @@ def confirmar_pagamento_assinatura_service(
     referencia_mes: str | None = None,
     realizar_commit: bool = True,
     valor_pagamento: float | None = None,
+    aceitar_plano_cobrado: bool = False,
 ):
     referencia = referencia_mes or _referencia_mes(datetime.now())
 
@@ -1189,6 +1418,68 @@ def confirmar_pagamento_assinatura_service(
             assinatura_bloqueada.id,
             referencia,
         )
+
+        plano_id_cobrado = int(plano.id)
+        plano_id_atual = int(assinatura_bloqueada.plano_id)
+        plano_id_programado = assinatura_bloqueada.plano_programado_id
+        if plano_id_programado is not None:
+            plano_id_programado = int(plano_id_programado)
+
+        if int(plano.barbearia_id) != int(assinatura_bloqueada.barbearia_id):
+            raise HTTPException(
+                status_code=400,
+                detail="O plano cobrado nao pertence a barbearia da assinatura.",
+            )
+
+        planos_permitidos = {plano_id_atual}
+        if plano_id_programado is not None:
+            planos_permitidos.add(plano_id_programado)
+
+        if (
+            plano_id_cobrado not in planos_permitidos
+            and not aceitar_plano_cobrado
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="O plano cobrado nao corresponde ao plano atual ou programado.",
+            )
+
+        troca_programada = (
+            plano_id_programado is not None
+            and plano_id_cobrado == plano_id_programado
+        )
+        troca_por_cobranca_registrada = (
+            aceitar_plano_cobrado
+            and plano_id_cobrado != plano_id_atual
+        )
+
+        if troca_programada or troca_por_cobranca_registrada:
+            db.add(
+                models.AssinaturaClienteTrocaPlano(
+                    assinatura_id=assinatura_bloqueada.id,
+                    barbearia_id=assinatura_bloqueada.barbearia_id,
+                    plano_anterior_id=plano_id_atual,
+                    plano_novo_id=plano_id_cobrado,
+                    usuario_id=usuario_id,
+                    acao=(
+                        "TROCA_EFETIVADA_POR_PAGAMENTO"
+                        if troca_programada
+                        else "TROCA_EFETIVADA_POR_COBRANCA_MP"
+                    ),
+                    observacoes=(
+                        "Plano da cobranca confirmada efetivado junto "
+                        "do pagamento."
+                    ),
+                )
+            )
+            assinatura_bloqueada.plano_id = plano_id_cobrado
+
+            # Limpa a programacao somente quando ela corresponde a
+            # cobranca paga. Uma programacao posterior e preservada.
+            if troca_programada:
+                assinatura_bloqueada.plano_programado_id = None
+                assinatura_bloqueada.troca_plano_solicitada_em = None
+                assinatura_bloqueada.troca_plano_usuario_id = None
 
         agora = datetime.now()
         _aplicar_renovacao_assinatura(

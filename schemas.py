@@ -641,6 +641,9 @@ class AssinaturaClienteResponse(BaseModel):
 
     cliente_id: int
     plano_id: int
+    plano_programado_id: Optional[int] = None
+    troca_plano_solicitada_em: Optional[datetime] = None
+    troca_plano_usuario_id: Optional[int] = None
 
     data_inicio: datetime
     data_fim: datetime
@@ -669,6 +672,26 @@ class AssinaturaClienteUpdate(BaseModel):
     valor_mensal: float | None = None
     status: str | None = None
     status_pagamento: str | None = None 
+
+class TrocarPlanoAssinaturaRequest(BaseModel):
+    plano_id: int
+    observacoes: Optional[str] = None
+
+
+class AssinaturaClienteTrocaPlanoResponse(BaseModel):
+    id: int
+    assinatura_id: int
+    barbearia_id: int
+    plano_anterior_id: int
+    plano_novo_id: int
+    usuario_id: Optional[int] = None
+    acao: str
+    observacoes: Optional[str] = None
+    criado_em: datetime
+
+    class Config:
+        from_attributes = True
+
 
 # =========================
 # USO DE PLANO

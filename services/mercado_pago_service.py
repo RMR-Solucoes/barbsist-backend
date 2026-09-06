@@ -404,8 +404,9 @@ def _validar_assinatura_para_cobranca(db, aid, bid):
     ).first()
     if not ass:
         raise HTTPException(status_code=404, detail="Assinatura não encontrada.")
+    plano_id_cobranca = ass.plano_programado_id or ass.plano_id
     plano = db.query(models.Plano).filter(
-        models.Plano.id == ass.plano_id,
+        models.Plano.id == plano_id_cobranca,
         models.Plano.barbearia_id == bid,
     ).first()
     if not plano or not plano.ativo:
@@ -466,6 +467,7 @@ def gerar_pix_assinatura_service(db, aid, email, u, base):
     c = models.MercadoPagoCobranca(
         barbearia_id=bid,
         assinatura_id=aid,
+        plano_id=plano.id,
         origem_negocio="PLANO_CLIENTE",
         origem_id=aid,
         order_id=f["order_id"],
@@ -558,6 +560,7 @@ def gerar_cartao_assinatura_service(db, aid, dados, u, base):
     c = models.MercadoPagoCobranca(
         barbearia_id=bid,
         assinatura_id=aid,
+        plano_id=plano.id,
         origem_negocio="PLANO_CLIENTE",
         origem_id=aid,
         order_id=f["order_id"],
@@ -883,14 +886,17 @@ def _processar_order_webhook(
         .first()
     )
 
+    # Cobrancas novas guardam o plano cobrado. Registros antigos,
+    # sem plano_id, mantem o comportamento anterior por compatibilidade.
+    plano_id_cobrado = c.plano_id or (ass.plano_id if ass else None)
     plano = (
         db.query(models.Plano)
         .filter(
-            models.Plano.id == ass.plano_id,
+            models.Plano.id == plano_id_cobrado,
             models.Plano.barbearia_id == bid,
         )
         .first()
-        if ass
+        if ass and plano_id_cobrado is not None
         else None
     )
 
@@ -926,6 +932,7 @@ def _processar_order_webhook(
             c.data_criacao.strftime("%Y-%m"),
             False,
             valor_pagamento=c.valor,
+            aceitar_plano_cobrado=True,
         )
     except HTTPException as exc:
         if exc.status_code != 409:

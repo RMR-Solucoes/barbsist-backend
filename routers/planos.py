@@ -17,6 +17,8 @@ from schemas import (
     RenovarAssinaturaRequest,
     SuspenderAssinaturaRequest,
     ReativarAssinaturaRequest,
+    TrocarPlanoAssinaturaRequest,
+    AssinaturaClienteTrocaPlanoResponse,
 )
 
 from services.plano_service import (
@@ -38,6 +40,9 @@ from services.plano_service import (
     reativar_assinatura_service,
     cancelar_assinatura_service,
     verificar_inadimplencia_service,
+    solicitar_troca_plano_service,
+    cancelar_troca_plano_service,
+    listar_historico_troca_plano_service,
 )
 
 from auth.permissions import (
@@ -242,6 +247,58 @@ def reativar_assinatura(
 # ASSINATURAS — ATUALIZAÇÃO GENÉRICA
 # Deve ficar após as rotas específicas.
 # ============================================================
+
+
+
+@router.put(
+    "/assinaturas/{assinatura_id}/trocar-plano",
+    response_model=AssinaturaClienteResponse,
+)
+def solicitar_troca_plano(
+    assinatura_id: int,
+    dados: TrocarPlanoAssinaturaRequest,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin_ou_gerente),
+):
+    return solicitar_troca_plano_service(
+        db=db,
+        assinatura_id=assinatura_id,
+        dados=dados,
+        usuario_logado=usuario_logado,
+    )
+
+
+@router.delete(
+    "/assinaturas/{assinatura_id}/troca-plano",
+    response_model=AssinaturaClienteResponse,
+)
+def cancelar_troca_plano(
+    assinatura_id: int,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin_ou_gerente),
+):
+    return cancelar_troca_plano_service(
+        db=db,
+        assinatura_id=assinatura_id,
+        usuario_logado=usuario_logado,
+    )
+
+
+@router.get(
+    "/assinaturas/{assinatura_id}/trocas-plano",
+    response_model=list[AssinaturaClienteTrocaPlanoResponse],
+)
+def listar_historico_troca_plano(
+    assinatura_id: int,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin_ou_gerente),
+):
+    return listar_historico_troca_plano_service(
+        db=db,
+        assinatura_id=assinatura_id,
+        usuario_logado=usuario_logado,
+    )
+
 
 @router.put(
     "/assinaturas/{assinatura_id}/cancelar",

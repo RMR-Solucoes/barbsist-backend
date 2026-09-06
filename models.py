@@ -1258,6 +1258,20 @@ class AssinaturaCliente(BarbeariaMixin, Base):
         nullable=False
     )
 
+    # Plano que passara a valer somente na proxima cobranca confirmada.
+    plano_programado_id = Column(
+        Integer,
+        ForeignKey("planos.id"),
+        nullable=True,
+        index=True,
+    )
+    troca_plano_solicitada_em = Column(DateTime, nullable=True)
+    troca_plano_usuario_id = Column(
+        Integer,
+        ForeignKey("usuarios.id"),
+        nullable=True,
+    )
+
     data_inicio = Column(
         DateTime,
         default=datetime.now
@@ -1305,7 +1319,48 @@ class AssinaturaCliente(BarbeariaMixin, Base):
     )
 
     cliente = relationship("Cliente")
-    plano = relationship("Plano")
+    plano = relationship("Plano", foreign_keys=[plano_id])
+    plano_programado = relationship(
+        "Plano",
+        foreign_keys=[plano_programado_id],
+    )
+
+
+class AssinaturaClienteTrocaPlano(Base):
+    __tablename__ = "assinaturas_clientes_trocas_planos"
+
+    id = Column(Integer, primary_key=True, index=True)
+    assinatura_id = Column(
+        Integer,
+        ForeignKey("assinaturas_clientes.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    barbearia_id = Column(
+        Integer,
+        ForeignKey("barbearias.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    plano_anterior_id = Column(
+        Integer,
+        ForeignKey("planos.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    plano_novo_id = Column(
+        Integer,
+        ForeignKey("planos.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    usuario_id = Column(
+        Integer,
+        ForeignKey("usuarios.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    acao = Column(String, nullable=False, index=True)
+    observacoes = Column(String, nullable=True)
+    criado_em = Column(DateTime, nullable=False, default=datetime.now)
+
 
 class UsoPlano(Base):
     __tablename__ = "usos_planos"
@@ -1543,6 +1598,8 @@ class MercadoPagoCobranca(Base):
     # A cobrança pode nascer de Plano, Comanda ou Venda.
     # assinatura_id é mantido por compatibilidade com o fluxo atual de planos.
     assinatura_id = Column(Integer, ForeignKey("assinaturas_clientes.id"), nullable=True, index=True)
+    # Fotografia do plano usado para calcular esta cobranca.
+    plano_id = Column(Integer, ForeignKey("planos.id"), nullable=True, index=True)
     origem_negocio = Column(String, default="PLANO_CLIENTE", nullable=False, index=True)
     origem_id = Column(Integer, nullable=True, index=True)
     payment_id = Column(String, nullable=True, index=True)
