@@ -488,14 +488,10 @@ def fechar_comanda_service(
     usuario_logado
 ):
     try:
-        comanda = buscar_da_barbearia(
+        comanda = _buscar_comanda_para_operacao(
             db=db,
-            model=models.Comanda,
-            registro_id=comanda_id,
-            usuario=usuario_logado,
-            mensagem_nao_encontrado=(
-                "Comanda não encontrada ou já fechada."
-            )
+            comanda_id=comanda_id,
+            usuario_logado=usuario_logado,
         )
 
         if comanda.status != "aberta":

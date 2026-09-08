@@ -22,6 +22,69 @@ STATUS_COM_CONFLITO = (
 )
 
 
+def _obter_barbeiro_id_restrito(
+    usuario_logado,
+    barbeiro_id_solicitado=None,
+):
+    """Restringe o perfil barbeiro ao profissional vinculado."""
+    perfil = (
+        getattr(usuario_logado, "perfil", "") or ""
+    ).strip().lower()
+
+    if perfil != "barbeiro":
+        return None
+
+    barbeiro_id = getattr(
+        usuario_logado,
+        "barbeiro_id",
+        None,
+    )
+
+    if barbeiro_id is None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Usuário barbeiro não está vinculado "
+                "a um barbeiro."
+            ),
+        )
+
+    if (
+        barbeiro_id_solicitado is not None
+        and barbeiro_id_solicitado != barbeiro_id
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "O barbeiro só pode administrar "
+                "os próprios agendamentos."
+            ),
+        )
+
+    return barbeiro_id
+
+
+def _validar_acesso_barbeiro_agendamento(
+    usuario_logado,
+    agendamento,
+):
+    barbeiro_id = _obter_barbeiro_id_restrito(
+        usuario_logado
+    )
+
+    if (
+        barbeiro_id is not None
+        and agendamento.barbeiro_id != barbeiro_id
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "O barbeiro só pode administrar "
+                "os próprios agendamentos."
+            ),
+        )
+
+
 def validar_cliente(db, cliente_id, usuario_logado):
     if cliente_id is None:
         return None
@@ -130,6 +193,11 @@ def verificar_conflito_horario(
 
 def criar_agendamento_service(db, dados, usuario_logado):
     barbearia_id = obter_barbearia_id(usuario_logado)
+
+    _obter_barbeiro_id_restrito(
+        usuario_logado,
+        dados.barbeiro_id,
+    )
 
     cliente = validar_cliente(
         db,
@@ -271,25 +339,43 @@ def criar_agendamento_service(db, dados, usuario_logado):
 
 
 def listar_agendamentos_service(db, usuario_logado):
-    return (
-        consultar_da_barbearia(
-            db=db,
-            model=models.Agendamento,
-            usuario=usuario_logado,
+    query = consultar_da_barbearia(
+        db=db,
+        model=models.Agendamento,
+        usuario=usuario_logado,
+    )
+
+    barbeiro_id = _obter_barbeiro_id_restrito(
+        usuario_logado
+    )
+
+    if barbeiro_id is not None:
+        query = query.filter(
+            models.Agendamento.barbeiro_id == barbeiro_id
         )
+
+    return (
+        query
         .order_by(models.Agendamento.data_hora_inicio.asc())
         .all()
     )
 
 
 def buscar_agendamento_service(db, agendamento_id: int, usuario_logado):
-    return buscar_da_barbearia(
+    agendamento = buscar_da_barbearia(
         db=db,
         model=models.Agendamento,
         registro_id=agendamento_id,
         usuario=usuario_logado,
         mensagem_nao_encontrado="Agendamento não encontrado.",
     )
+
+    _validar_acesso_barbeiro_agendamento(
+        usuario_logado,
+        agendamento,
+    )
+
+    return agendamento
 
 
 def cancelar_agendamento_service(db, agendamento_id: int, usuario_logado):
@@ -319,6 +405,14 @@ def listar_agendamentos_por_filtro_service(
     data_agenda=None,
     barbeiro_id=None,
 ):
+    barbeiro_id_restrito = _obter_barbeiro_id_restrito(
+        usuario_logado,
+        barbeiro_id,
+    )
+
+    if barbeiro_id_restrito is not None:
+        barbeiro_id = barbeiro_id_restrito
+
     query = consultar_da_barbearia(
         db=db,
         model=models.Agendamento,
@@ -419,6 +513,11 @@ def converter_agendamento_em_comanda_service(
             status_code=404,
             detail="Agendamento não encontrado.",
         )
+
+    _validar_acesso_barbeiro_agendamento(
+        usuario_logado,
+        agendamento,
+    )
 
     comanda_existente = (
         db.query(models.Comanda)
@@ -567,6 +666,14 @@ def calendario_agendamentos_service(
     data_inicio=None,
     data_fim=None,
 ):
+    barbeiro_id_restrito = _obter_barbeiro_id_restrito(
+        usuario_logado,
+        barbeiro_id,
+    )
+
+    if barbeiro_id_restrito is not None:
+        barbeiro_id = barbeiro_id_restrito
+
     query = consultar_da_barbearia(
         db=db,
         model=models.Agendamento,

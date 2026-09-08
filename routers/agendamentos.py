@@ -24,7 +24,6 @@ from services.agendamento_service import (
 
 from auth.permissions import (
     admin_gerente_ou_barbeiro,
-    admin_gerente_ou_recepcao,
     admin_gerente_recepcao_ou_barbeiro,
 )
 
@@ -118,7 +117,7 @@ def buscar_agendamento(
 def cancelar_agendamento(
     agendamento_id: int,
     db: Session = Depends(get_db),
-    usuario_logado=Depends(admin_gerente_ou_recepcao),
+    usuario_logado=Depends(admin_gerente_recepcao_ou_barbeiro),
 ):
     return cancelar_agendamento_service(
         db=db,
@@ -135,7 +134,7 @@ def atualizar_status_agendamento(
     agendamento_id: int,
     dados: AtualizarStatusAgendamento,
     db: Session = Depends(get_db),
-    usuario_logado=Depends(admin_gerente_ou_recepcao),
+    usuario_logado=Depends(admin_gerente_recepcao_ou_barbeiro),
 ):
     return atualizar_status_agendamento_service(
         db=db,
@@ -166,7 +165,7 @@ def reagendar_agendamento(
     agendamento_id: int,
     dados: ReagendarAgendamentoRequest,
     db: Session = Depends(get_db),
-    usuario_logado=Depends(admin_gerente_ou_recepcao),
+    usuario_logado=Depends(admin_gerente_recepcao_ou_barbeiro),
 ):
     return reagendar_agendamento_service(
         db=db,

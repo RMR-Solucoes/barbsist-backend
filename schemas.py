@@ -426,6 +426,7 @@ class ComissaoResponse(BaseModel):
     valor_servico: float
     percentual: float
     valor_comissao: float
+    data: datetime
 
     class Config:
         from_attributes = True

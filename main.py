@@ -9,6 +9,7 @@ from routers import financeiro_plataforma
 
 from parceiros.router_parceiros import router as parceiros_router
 from parceiros.router_portal_parceiro import router as portal_parceiro_router
+from portal_cliente.router import router as portal_cliente_router
 
 from routers import (
     barbearia,
@@ -142,3 +143,4 @@ app.include_router(admin_plataforma.router)
 app.include_router(financeiro_plataforma.router)
 app.include_router(parceiros_router)
 app.include_router(portal_parceiro_router)
+app.include_router(portal_cliente_router)
