@@ -485,17 +485,15 @@ def fechar_comanda_service(
     db,
     comanda_id: int,
     forma_pagamento: str,
-    usuario_logado
+    usuario_logado,
+    ignorar_cobranca_online_pendente: bool = False,
+    realizar_commit: bool = True,
 ):
     try:
-        comanda = buscar_da_barbearia(
+        comanda = _buscar_comanda_para_operacao(
             db=db,
-            model=models.Comanda,
-            registro_id=comanda_id,
-            usuario=usuario_logado,
-            mensagem_nao_encontrado=(
-                "Comanda não encontrada ou já fechada."
-            )
+            comanda_id=comanda_id,
+            usuario_logado=usuario_logado,
         )
 
         if comanda.status != "aberta":
@@ -505,6 +503,26 @@ def fechar_comanda_service(
                     "Comanda não encontrada ou já fechada."
                 )
             )
+
+        if not ignorar_cobranca_online_pendente:
+            pendente = (
+                db.query(models.MercadoPagoCobranca)
+                .filter(
+                    models.MercadoPagoCobranca.barbearia_id == comanda.barbearia_id,
+                    models.MercadoPagoCobranca.origem_negocio == "COMANDA",
+                    models.MercadoPagoCobranca.origem_id == comanda.id,
+                    models.MercadoPagoCobranca.processado.is_(False),
+                    models.MercadoPagoCobranca.status.in_([
+                        "pending", "action_required", "in_process", "created"
+                    ]),
+                )
+                .first()
+            )
+            if pendente:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Esta comanda possui pagamento online pendente. Aguarde a confirmação ou o vencimento da cobrança.",
+                )
 
         itens = (
             db.query(models.ItemComanda)
@@ -582,7 +600,7 @@ def fechar_comanda_service(
                 barbearia_id=comanda.barbearia_id,
                 origem="COMANDA",
                 referencia_id=comanda.id,
-                usuario_id=usuario_logado.id,
+                usuario_id=getattr(usuario_logado, "id", None),
             )
 
         valor_comissao = 0.0
@@ -598,7 +616,10 @@ def fechar_comanda_service(
                 )
             )
 
-        db.commit()
+        if realizar_commit:
+            db.commit()
+        else:
+            db.flush()
         db.refresh(comanda)
 
         return {
@@ -629,6 +650,51 @@ def fechar_comanda_service(
                 "Erro ao fechar comanda: "
                 f"{str(erro)}"
             )
+        )
+
+
+def fechar_comanda_pagamento_online_service(
+    db,
+    comanda_id: int,
+    barbearia_id: int,
+    forma_pagamento: str,
+):
+    """Fecha a comanda dentro da transação do webhook do Mercado Pago."""
+    from types import SimpleNamespace
+
+    contexto = SimpleNamespace(
+        id=None,
+        barbearia_id=barbearia_id,
+        perfil="admin",
+    )
+    return fechar_comanda_service(
+        db=db,
+        comanda_id=comanda_id,
+        forma_pagamento=forma_pagamento,
+        usuario_logado=contexto,
+        ignorar_cobranca_online_pendente=True,
+        realizar_commit=False,
+    )
+
+
+def validar_sem_pagamento_online_pendente(db, comanda_id: int, barbearia_id: int):
+    pendente = (
+        db.query(models.MercadoPagoCobranca)
+        .filter(
+            models.MercadoPagoCobranca.barbearia_id == barbearia_id,
+            models.MercadoPagoCobranca.origem_negocio == "COMANDA",
+            models.MercadoPagoCobranca.origem_id == comanda_id,
+            models.MercadoPagoCobranca.processado.is_(False),
+            models.MercadoPagoCobranca.status.in_([
+                "pending", "action_required", "in_process", "created"
+            ]),
+        )
+        .first()
+    )
+    if pendente:
+        raise HTTPException(
+            status_code=409,
+            detail="A comanda possui pagamento online pendente e não pode ser alterada.",
         )
 
 
@@ -696,6 +762,9 @@ def remover_item_comanda_service(
             db=db,
             comanda_id=comanda_id,
             usuario_logado=usuario_logado,
+        )
+        validar_sem_pagamento_online_pendente(
+            db, comanda.id, comanda.barbearia_id
         )
 
         if (comanda.status or "").lower() != "aberta":
@@ -769,6 +838,9 @@ def cancelar_comanda_service(
             comanda_id=comanda_id,
             usuario_logado=usuario_logado,
         )
+        validar_sem_pagamento_online_pendente(
+            db, comanda.id, comanda.barbearia_id
+        )
 
         if (comanda.status or "").lower() != "aberta":
             raise HTTPException(
@@ -815,4 +887,3 @@ def cancelar_comanda_service(
             status_code=500,
             detail=f"Erro ao cancelar comanda: {erro}",
         )
-

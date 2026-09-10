@@ -416,7 +416,7 @@ class CaixaResumoFiltro(BaseModel):
     data_inicio: date | None = None
     data_fim: date | None = None
 # =========================
-# COMISSÕES
+# COMISSÃ•ES
 # =========================
 
 class ComissaoResponse(BaseModel):
@@ -426,6 +426,7 @@ class ComissaoResponse(BaseModel):
     valor_servico: float
     percentual: float
     valor_comissao: float
+    data: datetime
 
     class Config:
         from_attributes = True
@@ -634,6 +635,7 @@ class PlanoUpdate(BaseModel):
 class AssinaturaClienteCreate(BaseModel):
     cliente_id: int
     plano_id: int
+    dia_vencimento: int = Field(ge=1, le=28)
 
 
 class AssinaturaClienteResponse(BaseModel):
@@ -650,6 +652,11 @@ class AssinaturaClienteResponse(BaseModel):
 
     data_ultimo_pagamento: Optional[datetime] = None
     data_proximo_vencimento: Optional[datetime] = None
+    dia_vencimento: Optional[int] = None
+    fator_primeiro_ciclo: Optional[float] = None
+    valor_proxima_cobranca: Optional[float] = None
+    usos_proximo_ciclo: Optional[int] = None
+    primeiro_ciclo_processado: bool = False
 
     dias_tolerancia: int = 5
     valor_mensal: float = 0
@@ -672,6 +679,7 @@ class AssinaturaClienteUpdate(BaseModel):
     valor_mensal: float | None = None
     status: str | None = None
     status_pagamento: str | None = None 
+    dia_vencimento: int | None = Field(default=None, ge=1, le=28)
 
 class TrocarPlanoAssinaturaRequest(BaseModel):
     plano_id: int
@@ -727,7 +735,7 @@ class RegistrarPagamentoPlanoRequest(BaseModel):
 
 
 # =========================
-# HISTÓRICO DE PAGAMENTOS DOS PLANOS
+# HISTÃ“RICO DE PAGAMENTOS DOS PLANOS
 # =========================
 
 class PagamentoPlanoResponse(BaseModel):
@@ -1344,4 +1352,3 @@ class FinanceiroPlataformaFluxoResponse(BaseModel):
     saldo_inicial: float
     saldo_final: float
     dias: list[FinanceiroPlataformaFluxoDia]
-

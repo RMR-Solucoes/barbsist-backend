@@ -1,4 +1,6 @@
 from datetime import datetime, timedelta
+import calendar
+import math
 
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
@@ -47,7 +49,7 @@ STATUS_ASSINATURA_EM_ABERTO = {
 
 
 # =========================
-# FUNÇÕES AUXILIARES
+# FUNÃ‡Ãƒâ€¢ES AUXILIARES
 # =========================
 
 def _dados_parciais(dados):
@@ -65,6 +67,65 @@ def _normalizar_texto(valor):
         return valor.strip()
 
     return valor
+
+
+def _validar_dia_vencimento(dia):
+    try:
+        dia = int(dia)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Informe o dia de vencimento.")
+    if dia < 1 or dia > 28:
+        raise HTTPException(status_code=400, detail="O dia de vencimento deve estar entre 1 e 28.")
+    return dia
+
+
+def _somar_mes(ano, mes, quantidade=1):
+    indice = ano * 12 + (mes - 1) + quantidade
+    return indice // 12, indice % 12 + 1
+
+
+def calcular_primeiro_ciclo_proporcional(agora, dia_vencimento, plano):
+    """Congela vencimento, fator, valor e usos do primeiro ciclo."""
+    dia = _validar_dia_vencimento(dia_vencimento)
+    if agora.day < dia:
+        ano_vencimento, mes_vencimento = agora.year, agora.month
+    else:
+        ano_vencimento, mes_vencimento = _somar_mes(agora.year, agora.month)
+
+    vencimento = datetime(
+        ano_vencimento, mes_vencimento, dia, 23, 59, 59
+    )
+    ano_anterior, mes_anterior = _somar_mes(ano_vencimento, mes_vencimento, -1)
+    inicio_ciclo = datetime(ano_anterior, mes_anterior, dia, 23, 59, 59)
+    dias_ciclo = max(1, (vencimento.date() - inicio_ciclo.date()).days)
+    dias_utilizados = max(1, (vencimento.date() - agora.date()).days)
+    fator = min(1.0, dias_utilizados / dias_ciclo)
+    valor = max(0.01, round(float(plano.valor or 0) * fator, 2))
+    quantidade = max(0, int(plano.quantidade_servicos or 0))
+    usos = max(1, math.ceil(quantidade * fator)) if quantidade else 0
+    return vencimento, fator, valor, usos
+
+
+def valor_cobranca_assinatura(assinatura, valor_integral):
+    if not bool(getattr(assinatura, "primeiro_ciclo_processado", False)):
+        fator = float(getattr(assinatura, "fator_primeiro_ciclo", None) or 1)
+        return max(0.01, round(float(valor_integral) * fator, 2))
+    return round(float(valor_integral), 2)
+
+
+def referencia_cobranca_assinatura(assinatura, momento=None):
+    if not bool(getattr(assinatura, "primeiro_ciclo_processado", False)):
+        vencimento = getattr(assinatura, "data_proximo_vencimento", None)
+        sufixo = vencimento.strftime("%Y%m%d") if vencimento else (momento or datetime.now()).strftime("%Y%m%d")
+        return f"INICIAL-{assinatura.id}-{sufixo}"
+    vencimento = getattr(assinatura, "data_proximo_vencimento", None)
+    return (vencimento or momento or datetime.now()).strftime("%Y-%m")
+
+
+def _proximo_vencimento_fixo(agora, dia):
+    dia = _validar_dia_vencimento(dia)
+    ano, mes = _somar_mes(agora.year, agora.month)
+    return datetime(ano, mes, dia, 23, 59, 59)
 
 
 def validar_servicos_plano(
@@ -172,7 +233,22 @@ def _aplicar_renovacao_assinatura(assinatura, plano, agora):
     # Primeiro pagamento:
     # a vigencia comeca quando o pagamento e confirmado.
     if primeiro_pagamento:
-        base_renovacao = agora
+        vencimento_planejado = assinatura.data_proximo_vencimento
+        if vencimento_planejado is None:
+            base_renovacao = agora
+            assinatura.data_proximo_vencimento = (
+                _proximo_vencimento_fixo(agora, assinatura.dia_vencimento)
+                if assinatura.dia_vencimento
+                else agora + timedelta(days=plano.validade_dias)
+            )
+        assinatura.data_inicio = agora
+        assinatura.data_fim = assinatura.data_proximo_vencimento
+        assinatura.usos_disponiveis = int(
+            assinatura.usos_proximo_ciclo
+            if assinatura.usos_proximo_ciclo is not None
+            else plano.quantidade_servicos
+        )
+        assinatura.primeiro_ciclo_processado = True
 
     else:
         vencimento_atual = (
@@ -188,18 +264,22 @@ def _aplicar_renovacao_assinatura(assinatura, plano, agora):
             else agora
         )
 
+        if assinatura.dia_vencimento:
+            assinatura.data_proximo_vencimento = _proximo_vencimento_fixo(
+                base_renovacao, assinatura.dia_vencimento
+            )
+        else:
+            assinatura.data_proximo_vencimento = (
+                base_renovacao + timedelta(days=plano.validade_dias)
+            )
+        assinatura.data_fim = assinatura.data_proximo_vencimento
+        assinatura.usos_disponiveis = plano.quantidade_servicos
+
     assinatura.data_ultimo_pagamento = agora
 
-    assinatura.data_proximo_vencimento = (
-        base_renovacao + timedelta(days=plano.validade_dias)
-    )
-    assinatura.data_fim = assinatura.data_proximo_vencimento
-
-    # Renovação recompõe os usos contratados.
-    # Nesta versão, créditos não utilizados não acumulam.
-    assinatura.usos_disponiveis = plano.quantidade_servicos
-
     assinatura.valor_mensal = plano.valor
+    assinatura.valor_proxima_cobranca = plano.valor
+    assinatura.usos_proximo_ciclo = plano.quantidade_servicos
     assinatura.status_pagamento = PAGAMENTO_PAGO
     assinatura.status = STATUS_ATIVO
 
@@ -508,7 +588,10 @@ def criar_assinatura_service(
             )
 
         agora = datetime.now()
-        data_fim = agora + timedelta(days=plano.validade_dias)
+        dia_vencimento = _validar_dia_vencimento(dados.dia_vencimento)
+        data_fim, fator, valor_proporcional, usos_proporcionais = (
+            calcular_primeiro_ciclo_proporcional(agora, dia_vencimento, plano)
+        )
 
         assinatura = models.AssinaturaCliente(
             cliente_id=cliente.id,
@@ -516,7 +599,12 @@ def criar_assinatura_service(
             data_inicio=agora,
             data_fim=data_fim,
             data_ultimo_pagamento=None,
-            data_proximo_vencimento=None,
+            data_proximo_vencimento=data_fim,
+            dia_vencimento=dia_vencimento,
+            fator_primeiro_ciclo=fator,
+            valor_proxima_cobranca=valor_proporcional,
+            usos_proximo_ciclo=usos_proporcionais,
+            primeiro_ciclo_processado=False,
             dias_tolerancia=5,
             valor_mensal=plano.valor,
             usos_disponiveis=0,
@@ -610,6 +698,8 @@ def atualizar_assinatura_service(
 
         campos = _dados_parciais(dados)
 
+        novo_dia_vencimento = campos.pop("dia_vencimento", None)
+
         campos_protegidos = {
             "id",
             "barbearia_id",
@@ -630,6 +720,77 @@ def atualizar_assinatura_service(
 
         for campo, valor in campos.items():
             setattr(assinatura, campo, valor)
+
+        if novo_dia_vencimento is not None:
+            dia = _validar_dia_vencimento(novo_dia_vencimento)
+
+            if assinatura.dia_vencimento == dia:
+                db.refresh(assinatura)
+                return assinatura
+
+            pagamento_confirmado = (
+                assinatura.data_ultimo_pagamento is not None
+                or bool(getattr(assinatura, "primeiro_ciclo_processado", False))
+                or str(assinatura.status_pagamento or "").upper() == PAGAMENTO_PAGO
+                or db.query(models.PagamentoPlano.id)
+                .filter(
+                    models.PagamentoPlano.assinatura_id == assinatura.id,
+                    models.PagamentoPlano.status == PAGAMENTO_PAGO,
+                )
+                .first()
+                is not None
+            )
+
+            if pagamento_confirmado:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "O vencimento não pode ser alterado porque a assinatura já "
+                        "possui pagamento confirmado. A programação para ciclos futuros "
+                        "será disponibilizada em uma etapa específica."
+                    ),
+                )
+
+            status_cobranca_encerrada = {
+                "cancelled",
+                "canceled",
+                "rejected",
+                "refunded",
+                "charged_back",
+                "expired",
+            }
+            cobranca_em_aberto = (
+                db.query(models.MercadoPagoCobranca.id)
+                .filter(
+                    models.MercadoPagoCobranca.barbearia_id
+                    == assinatura.barbearia_id,
+                    models.MercadoPagoCobranca.assinatura_id == assinatura.id,
+                    ~models.MercadoPagoCobranca.status.in_(status_cobranca_encerrada),
+                )
+                .first()
+            )
+
+            if cobranca_em_aberto is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Existe uma cobrança online em andamento para esta assinatura. "
+                        "Aguarde sua conclusão ou cancelamento antes de alterar o vencimento."
+                    ),
+                )
+
+            plano = buscar_plano_service(
+                db, assinatura.plano_id, usuario_logado, exigir_ativo=False
+            )
+            vencimento, fator, valor, usos = calcular_primeiro_ciclo_proporcional(
+                datetime.now(), dia, plano
+            )
+            assinatura.dia_vencimento = dia
+            assinatura.data_proximo_vencimento = vencimento
+            assinatura.data_fim = vencimento
+            assinatura.fator_primeiro_ciclo = fator
+            assinatura.valor_proxima_cobranca = valor
+            assinatura.usos_proximo_ciclo = usos
 
         if assinatura.status:
             assinatura.status = assinatura.status.upper()
@@ -948,7 +1109,7 @@ def listar_pagamentos_cliente_service(
 
 
 # =========================
-# RENOVAÇÃO DE ASSINATURA
+# RENOVAÃ‡ÃƒÆ’O DE ASSINATURA
 # =========================
 
 
@@ -1176,7 +1337,7 @@ def renovar_assinatura_service(db, assinatura_id: int, dados, usuario_logado):
 
 
 # =========================
-# SUSPENSÃO E REATIVAÇÃO
+# SUSPENSÃƒÆ’O E REATIVAÃ‡ÃƒÆ’O
 # =========================
 
 def suspender_assinatura_service(
@@ -1328,7 +1489,7 @@ def reativar_assinatura_service(
 
 
 # =========================
-# INADIMPLÊNCIA
+# INADIMPLÃƒÅ NCIA
 # =========================
 
 def verificar_inadimplencia_service(
@@ -1393,7 +1554,9 @@ def confirmar_pagamento_assinatura_service(
     valor_pagamento: float | None = None,
     aceitar_plano_cobrado: bool = False,
 ):
-    referencia = referencia_mes or _referencia_mes(datetime.now())
+    referencia = referencia_mes or referencia_cobranca_assinatura(
+        assinatura, datetime.now()
+    )
 
     try:
         assinatura_bloqueada = (
@@ -1481,17 +1644,17 @@ def confirmar_pagamento_assinatura_service(
                 assinatura_bloqueada.troca_plano_solicitada_em = None
                 assinatura_bloqueada.troca_plano_usuario_id = None
 
+        valor_recebido = float(
+            valor_pagamento
+            if valor_pagamento is not None
+            else valor_cobranca_assinatura(assinatura_bloqueada, plano.valor)
+        )
+
         agora = datetime.now()
         _aplicar_renovacao_assinatura(
             assinatura_bloqueada,
             plano,
             agora,
-        )
-
-        valor_recebido = float(
-            valor_pagamento
-            if valor_pagamento is not None
-            else plano.valor
         )
 
         registrar_entrada_caixa(
@@ -1551,4 +1714,3 @@ def confirmar_pagamento_assinatura_service(
             status_code=500,
             detail=f"Erro ao confirmar pagamento do plano: {str(erro)}",
         )
-
