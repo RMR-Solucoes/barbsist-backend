@@ -6,7 +6,15 @@ from cryptography.fernet import Fernet, InvalidToken
 from fastapi import HTTPException, status
 import models
 from auth.tenant import obter_barbearia_id
-from services.plano_service import confirmar_pagamento_assinatura_service
+from services.plano_service import (
+    confirmar_pagamento_assinatura_service,
+    referencia_cobranca_assinatura,
+    valor_cobranca_assinatura,
+)
+from services.comanda_service import (
+    calcular_total_devido_comanda,
+    fechar_comanda_pagamento_online_service,
+)
 MP_API_BASE = "https://api.mercadopago.com"
 MP_AUTH_BASE = "https://auth.mercadopago.com.br/authorization"
 
@@ -411,7 +419,7 @@ def _validar_assinatura_para_cobranca(db, aid, bid):
     ).first()
     if not plano or not plano.ativo:
         raise HTTPException(status_code=400, detail="Plano da assinatura não está disponível.")
-    ref = datetime.now().strftime("%Y-%m")
+    ref = referencia_cobranca_assinatura(ass, datetime.now())
     if db.query(models.PagamentoPlano).filter(
         models.PagamentoPlano.assinatura_id == aid,
         models.PagamentoPlano.referencia_mes == ref,
@@ -438,7 +446,8 @@ def gerar_pix_assinatura_service(db, aid, email, u, base):
             detail="Informe um e-mail válido do pagador para gerar o PIX.",
         )
 
-    valor = round(float(plano.valor_pix if plano.valor_pix is not None else plano.valor), 2)
+    valor_integral = plano.valor_pix if plano.valor_pix is not None else plano.valor
+    valor = valor_cobranca_assinatura(ass, valor_integral)
     idem = str(uuid.uuid4())
     ext = f"BARBSIST-{bid}-ASS-{aid}-{ref}-{uuid.uuid4().hex[:8]}"
     payload = {
@@ -502,7 +511,7 @@ def gerar_cartao_assinatura_service(db, aid, dados, u, base):
             status_code=400,
             detail="Mercado Pago não está configurado/ativo para esta barbearia.",
         )
-    _, plano, ref = _validar_assinatura_para_cobranca(db, aid, bid)
+    ass, plano, ref = _validar_assinatura_para_cobranca(db, aid, bid)
     parcelas = int(dados.installments or 1)
     max_parcelas = max(1, min(int(plano.max_parcelas_cartao or 1), 12))
     if parcelas < 1 or parcelas > max_parcelas:
@@ -520,7 +529,8 @@ def gerar_cartao_assinatura_service(db, aid, dados, u, base):
     if not pmid:
         raise HTTPException(status_code=400, detail="payment_method_id não informado.")
 
-    valor = round(float(plano.valor_cartao if plano.valor_cartao is not None else plano.valor), 2)
+    valor_integral = plano.valor_cartao if plano.valor_cartao is not None else plano.valor
+    valor = valor_cobranca_assinatura(ass, valor_integral)
     idem = str(uuid.uuid4())
     ext = f"BARBSIST-{bid}-ASS-{aid}-{ref}-{uuid.uuid4().hex[:8]}"
     payer_obj = {"email": payer}
@@ -584,6 +594,136 @@ def gerar_cartao_assinatura_service(db, aid, dados, u, base):
     return _dict(c)
 
 
+def _comanda_do_cliente_para_cobranca(db, comanda_id, acesso):
+    comanda = (
+        db.query(models.Comanda)
+        .filter(
+            models.Comanda.id == int(comanda_id),
+            models.Comanda.barbearia_id == acesso.barbearia_id,
+            models.Comanda.cliente_id == acesso.cliente_id,
+        )
+        .with_for_update()
+        .first()
+    )
+    if not comanda:
+        raise HTTPException(status_code=404, detail="Comanda não encontrada para este cliente.")
+    if (comanda.status or "").lower() != "aberta":
+        raise HTTPException(status_code=409, detail="Esta comanda não está aberta.")
+    itens = db.query(models.ItemComanda).filter(models.ItemComanda.comanda_id == comanda.id).all()
+    valor = round(float(calcular_total_devido_comanda(itens)), 2)
+    if valor <= 0:
+        raise HTTPException(status_code=400, detail="Esta comanda não possui valor pendente para pagamento.")
+    return comanda, valor
+
+
+def _configuracao_portal(db, acesso):
+    cfg = obter_configuracao(db, acesso.barbearia_id)
+    if not cfg or not cfg.ativo or not cfg.access_token_encrypted:
+        raise HTTPException(status_code=400, detail="Mercado Pago não está configurado/ativo para esta barbearia.")
+    return cfg
+
+
+def status_mercado_pago_portal_service(db, acesso):
+    cfg = obter_configuracao(db, acesso.barbearia_id)
+    disponivel = bool(cfg and cfg.ativo and cfg.access_token_encrypted and cfg.public_key)
+    return {"disponivel": disponivel, "public_key": cfg.public_key if disponivel else None}
+
+
+def obter_cobranca_comanda_portal_service(db, comanda_id, acesso):
+    _comanda_do_cliente_para_cobranca(db, comanda_id, acesso)
+    cobranca = (
+        db.query(models.MercadoPagoCobranca)
+        .filter(
+            models.MercadoPagoCobranca.barbearia_id == acesso.barbearia_id,
+            models.MercadoPagoCobranca.origem_negocio == "COMANDA",
+            models.MercadoPagoCobranca.origem_id == int(comanda_id),
+        )
+        .order_by(models.MercadoPagoCobranca.id.desc())
+        .first()
+    )
+    return _dict(cobranca) if cobranca else None
+
+
+def _cobranca_comanda_pendente(db, comanda_id, barbearia_id):
+    return (
+        db.query(models.MercadoPagoCobranca)
+        .filter(
+            models.MercadoPagoCobranca.barbearia_id == barbearia_id,
+            models.MercadoPagoCobranca.origem_negocio == "COMANDA",
+            models.MercadoPagoCobranca.origem_id == int(comanda_id),
+            models.MercadoPagoCobranca.processado.is_(False),
+            models.MercadoPagoCobranca.status.in_(["pending", "action_required", "in_process", "created"]),
+        )
+        .order_by(models.MercadoPagoCobranca.id.desc())
+        .first()
+    )
+
+
+def gerar_pix_comanda_portal_service(db, comanda_id, payer_email, acesso):
+    comanda, valor = _comanda_do_cliente_para_cobranca(db, comanda_id, acesso)
+    cfg = _configuracao_portal(db, acesso)
+    existente = _cobranca_comanda_pendente(db, comanda.id, acesso.barbearia_id)
+    if existente:
+        return _dict(existente)
+    payer = (payer_email or acesso.email or "").strip()
+    if "@" not in payer:
+        raise HTTPException(status_code=400, detail="Informe um e-mail válido do pagador.")
+    idem = str(uuid.uuid4())
+    ext = f"BARBSIST-{acesso.barbearia_id}-COM-{comanda.id}-{uuid.uuid4().hex[:8]}"
+    payload = {
+        "type": "online", "total_amount": _amount(valor), "external_reference": ext,
+        "processing_mode": "automatic", "payer": {"email": payer},
+        "transactions": {"payments": [{"amount": _amount(valor), "payment_method": {"id": "pix", "type": "bank_transfer"}}]},
+    }
+    order = _api("POST", "/v1/orders", obter_access_token_valido(db, cfg), payload, {"X-Idempotency-Key": idem})
+    f = _order_fields(order)
+    c = models.MercadoPagoCobranca(
+        barbearia_id=acesso.barbearia_id, origem_negocio="COMANDA", origem_id=comanda.id,
+        order_id=f["order_id"], payment_id=f["payment_id"], idempotency_key=idem,
+        external_reference=ext, valor=valor, tipo_pagamento="PIX", installments=1,
+        valor_parcela=valor, payment_method_id=f["payment_method_id"] or "pix",
+        payment_type_id=f["payment_type_id"] or "bank_transfer", status=f["status"],
+        status_detail=f["status_detail"], payer_email=payer, qr_code=f["qr_code"],
+        qr_code_base64=f["qr_code_base64"], ticket_url=f["ticket_url"], processado=False,
+    )
+    db.add(c); db.commit(); db.refresh(c)
+    return _dict(c)
+
+
+def gerar_cartao_comanda_portal_service(db, comanda_id, dados, acesso):
+    comanda, valor = _comanda_do_cliente_para_cobranca(db, comanda_id, acesso)
+    cfg = _configuracao_portal(db, acesso)
+    if _cobranca_comanda_pendente(db, comanda.id, acesso.barbearia_id):
+        raise HTTPException(status_code=409, detail="Já existe um pagamento pendente para esta comanda.")
+    payer = (dados.payer_email or acesso.email or "").strip()
+    token = (dados.token or "").strip(); pmid = (dados.payment_method_id or "").strip()
+    if "@" not in payer or not token or not pmid:
+        raise HTTPException(status_code=400, detail="Dados do cartão ou pagador incompletos.")
+    parcelas = max(1, min(int(dados.installments or 1), 12))
+    idem = str(uuid.uuid4()); ext = f"BARBSIST-{acesso.barbearia_id}-COM-{comanda.id}-{uuid.uuid4().hex[:8]}"
+    payer_obj = {"email": payer}
+    if dados.identification_type and dados.identification_number:
+        payer_obj["identification"] = {"type": dados.identification_type, "number": dados.identification_number}
+    payload = {
+        "type": "online", "processing_mode": "automatic", "total_amount": _amount(valor),
+        "external_reference": ext, "payer": payer_obj,
+        "transactions": {"payments": [{"amount": _amount(valor), "payment_method": {
+            "id": pmid, "type": "credit_card", "token": token, "installments": parcelas}}]},
+    }
+    order = _api("POST", "/v1/orders", obter_access_token_valido(db, cfg), payload, {"X-Idempotency-Key": idem})
+    f = _order_fields(order)
+    c = models.MercadoPagoCobranca(
+        barbearia_id=acesso.barbearia_id, origem_negocio="COMANDA", origem_id=comanda.id,
+        order_id=f["order_id"], payment_id=f["payment_id"], idempotency_key=idem,
+        external_reference=ext, valor=valor, tipo_pagamento="CARTAO",
+        installments=f["installments"] or parcelas, valor_parcela=round(valor / parcelas, 2),
+        payment_method_id=f["payment_method_id"] or pmid, payment_type_id=f["payment_type_id"] or "credit_card",
+        status=f["status"], status_detail=f["status_detail"], payer_email=payer, processado=False,
+    )
+    db.add(c); db.commit(); db.refresh(c)
+    return _dict(c)
+
+
 def _normalizar_origem_negocio(valor):
     origem = (valor or "").strip().upper()
     aliases = {
@@ -599,6 +739,19 @@ def _normalizar_origem_negocio(valor):
             detail=f"Origem de cobrança inválida. Permitidas: {', '.join(sorted(permitidas))}.",
         )
     return origem
+
+
+def _referencia_assinatura_da_cobranca(cobranca, assinatura):
+    prefixo = (
+        f"BARBSIST-{cobranca.barbearia_id}-ASS-"
+        f"{assinatura.id}-"
+    )
+    externa = cobranca.external_reference or ""
+    if externa.startswith(prefixo) and "-" in externa[len(prefixo):]:
+        return externa[len(prefixo):].rsplit("-", 1)[0]
+    return referencia_cobranca_assinatura(
+        assinatura, cobranca.data_criacao
+    )
 
 
 def gerar_pix_cobranca_service(db, dados, u, base):
@@ -863,8 +1016,30 @@ def _processar_order_webhook(
         c.origem_negocio or "PLANO_CLIENTE"
     )
 
-    # COMANDA/VENDA permanecem reservadas e deliberadamente não
-    # são ativadas neste pacote de hardening.
+    if origem == "COMANDA":
+        comanda = (
+            db.query(models.Comanda)
+            .filter(
+                models.Comanda.id == int(c.origem_id),
+                models.Comanda.barbearia_id == bid,
+            )
+            .with_for_update()
+            .first()
+        )
+        if not comanda:
+            raise HTTPException(status_code=404, detail="Comanda da cobrança não encontrada.")
+        itens = db.query(models.ItemComanda).filter(models.ItemComanda.comanda_id == comanda.id).all()
+        if round(float(calcular_total_devido_comanda(itens)), 2) != round(float(c.valor), 2):
+            raise HTTPException(status_code=409, detail="O valor atual da comanda diverge da cobrança aprovada.")
+        if (comanda.status or "").lower() == "aberta":
+            forma = "mercado_pago_cartao" if (c.tipo_pagamento or "").upper() == "CARTAO" else "mercado_pago_pix"
+            fechar_comanda_pagamento_online_service(db, comanda.id, bid, forma)
+        elif (comanda.status or "").lower() != "fechada":
+            raise HTTPException(status_code=409, detail="A comanda não pode ser fechada neste estado.")
+        c.processado = True
+        db.commit()
+        return {"status": "processed", "origem": "COMANDA", "comanda_id": comanda.id}
+
     if origem != "PLANO_CLIENTE":
         db.commit()
         raise HTTPException(
@@ -929,7 +1104,7 @@ def _processar_order_webhook(
             forma,
             obs,
             None,
-            c.data_criacao.strftime("%Y-%m"),
+            _referencia_assinatura_da_cobranca(c, ass),
             False,
             valor_pagamento=c.valor,
             aceitar_plano_cobrado=True,

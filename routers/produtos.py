@@ -1,3 +1,4 @@
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
@@ -13,6 +14,7 @@ from schemas import (
 
 from auth.permissions import (
     admin_gerente_ou_recepcao,
+    todos_logados,
 )
 
 from services.produto_service import (
@@ -54,12 +56,10 @@ def criar_produto(
     response_model=list[ProdutoResponse],
 )
 def listar_produtos(
-    apenas_ativos: bool = Query(
-        default=True
-    ),
+    apenas_ativos: bool = Query(default=True),
     db: Session = Depends(get_db),
     usuario_logado: models.Usuario = Depends(
-        admin_gerente_ou_recepcao
+        todos_logados
     ),
 ):
     return listar_produtos_service(
@@ -108,9 +108,7 @@ def atualizar_produto(
     )
 
 
-@router.delete(
-    "/{produto_id}",
-)
+@router.delete("/{produto_id}")
 def deletar_produto(
     produto_id: int,
     db: Session = Depends(get_db),
@@ -125,9 +123,7 @@ def deletar_produto(
     )
 
     return {
-        "mensagem": (
-            "Produto desativado com sucesso."
-        ),
+        "mensagem": "Produto desativado com sucesso.",
         "produto": {
             "id": produto.id,
             "codigo": produto.codigo,

@@ -28,7 +28,8 @@ from services.comanda_service import (
     obter_assinatura_disponivel_comanda_service,
     usar_plano_em_item_comanda_service,
     remover_item_comanda_service,
-    cancelar_comanda_service
+    cancelar_comanda_service,
+    validar_sem_pagamento_online_pendente
 )
 
 from services.estoque_service import (
@@ -371,6 +372,10 @@ def adicionar_servico_na_comanda(
         comanda,
     )
 
+    validar_sem_pagamento_online_pendente(
+        db, comanda.id, comanda.barbearia_id
+    )
+
     if comanda.status != "aberta":
         raise HTTPException(
             status_code=404,
@@ -465,6 +470,10 @@ def adicionar_produto_na_comanda(
     _validar_acesso_barbeiro(
         usuario_logado,
         comanda,
+    )
+
+    validar_sem_pagamento_online_pendente(
+        db, comanda.id, comanda.barbearia_id
     )
 
     if comanda.status != "aberta":

@@ -1292,6 +1292,15 @@ class AssinaturaCliente(BarbeariaMixin, Base):
         nullable=True
     )
 
+    # Dia fixo escolhido para as cobranças recorrentes (1 a 28).
+    dia_vencimento = Column(Integer, nullable=True)
+
+    # Dados congelados do primeiro ciclo proporcional.
+    fator_primeiro_ciclo = Column(Float, nullable=True)
+    valor_proxima_cobranca = Column(Float, nullable=True)
+    usos_proximo_ciclo = Column(Integer, nullable=True)
+    primeiro_ciclo_processado = Column(Boolean, default=False, nullable=False)
+
     dias_tolerancia = Column(
         Integer,
         default=5
@@ -1850,4 +1859,3 @@ class FinanceiroPlataformaMovimentacao(Base):
     )
 
     usuario = relationship("Usuario")
-

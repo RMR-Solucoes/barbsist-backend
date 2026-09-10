@@ -6,8 +6,8 @@ from schemas import ServicoCreate, ServicoResponse
 
 from auth.permissions import (
     admin_gerente_ou_recepcao,
+    todos_logados,
 )
-
 
 from services.servico_service import (
     criar_servico_service,
@@ -19,125 +19,121 @@ from services.servico_service import (
 )
 import models
 
+
 router = APIRouter(
     prefix="/servicos",
     tags=["Serviços"],
-    
-        
-    
 )
 
 
 @router.post(
     "",
-    response_model=ServicoResponse
+    response_model=ServicoResponse,
 )
 def criar_servico(
     dados: ServicoCreate,
     db: Session = Depends(get_db),
     usuario_logado: models.Usuario = Depends(
-    admin_gerente_ou_recepcao
-)
+        admin_gerente_ou_recepcao
+    ),
 ):
     return criar_servico_service(
         dados=dados,
         db=db,
-        usuario_logado=usuario_logado
+        usuario_logado=usuario_logado,
     )
 
 
 @router.get(
     "",
-    response_model=list[ServicoResponse]
+    response_model=list[ServicoResponse],
 )
 def listar_servicos(
     apenas_ativos: bool = True,
     db: Session = Depends(get_db),
     usuario_logado: models.Usuario = Depends(
-    admin_gerente_ou_recepcao
-)
+        todos_logados
+    ),
 ):
     return listar_servicos_service(
         db=db,
         usuario_logado=usuario_logado,
-        apenas_ativos=apenas_ativos
+        apenas_ativos=apenas_ativos,
     )
 
 
 @router.get(
     "/{servico_id}",
-    response_model=ServicoResponse
+    response_model=ServicoResponse,
 )
 def buscar_servico(
     servico_id: int,
     db: Session = Depends(get_db),
     usuario_logado: models.Usuario = Depends(
-    admin_gerente_ou_recepcao
-)
+        admin_gerente_ou_recepcao
+    ),
 ):
     return buscar_servico_service(
         servico_id=servico_id,
         db=db,
         usuario_logado=usuario_logado,
-        exigir_ativo=False
+        exigir_ativo=False,
     )
 
 
 @router.put(
     "/{servico_id}",
-    response_model=ServicoResponse
+    response_model=ServicoResponse,
 )
 def atualizar_servico(
     servico_id: int,
     dados: ServicoCreate,
     db: Session = Depends(get_db),
     usuario_logado: models.Usuario = Depends(
-    admin_gerente_ou_recepcao
-)
+        admin_gerente_ou_recepcao
+    ),
 ):
     return atualizar_servico_service(
         servico_id=servico_id,
         dados=dados,
         db=db,
-        usuario_logado=usuario_logado
+        usuario_logado=usuario_logado,
     )
 
 
-@router.delete(
-    "/{servico_id}"
-)
+@router.delete("/{servico_id}")
 def inativar_servico(
     servico_id: int,
     db: Session = Depends(get_db),
     usuario_logado: models.Usuario = Depends(
-    admin_gerente_ou_recepcao
-)
+        admin_gerente_ou_recepcao
+    ),
 ):
     servico = inativar_servico_service(
         servico_id=servico_id,
         db=db,
-        usuario_logado=usuario_logado
+        usuario_logado=usuario_logado,
     )
 
     return {
         "mensagem": "Serviço desativado com sucesso.",
-        "servico_id": servico.id
+        "servico_id": servico.id,
     }
 
 
 @router.put(
     "/{servico_id}/reativar",
-    response_model=ServicoResponse
+    response_model=ServicoResponse,
 )
 def reativar_servico(
     servico_id: int,
     db: Session = Depends(get_db),
     usuario_logado: models.Usuario = Depends(
-    admin_gerente_ou_recepcao
-)
+        admin_gerente_ou_recepcao
+    ),
 ):
     return reativar_servico_service(
         servico_id=servico_id,
         db=db,
-        usuario_logado=usuario_logado
+        usuario_logado=usuario_logado,
     )
