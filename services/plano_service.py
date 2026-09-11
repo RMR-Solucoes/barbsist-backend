@@ -49,7 +49,7 @@ STATUS_ASSINATURA_EM_ABERTO = {
 
 
 # =========================
-# FUNÃ‡Ãƒâ€¢ES AUXILIARES
+# FUNÇÕES AUXILIARES
 # =========================
 
 def _dados_parciais(dados):
@@ -728,6 +728,16 @@ def atualizar_assinatura_service(
                 db.refresh(assinatura)
                 return assinatura
 
+            status_atual = str(assinatura.status or "").upper()
+            if status_atual in {STATUS_CANCELADO, STATUS_ENCERRADO}:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "O vencimento não pode ser alterado em uma assinatura "
+                        "cancelada ou encerrada."
+                    ),
+                )
+
             pagamento_confirmado = (
                 assinatura.data_ultimo_pagamento is not None
                 or bool(getattr(assinatura, "primeiro_ciclo_processado", False))
@@ -742,14 +752,13 @@ def atualizar_assinatura_service(
             )
 
             if pagamento_confirmado:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "O vencimento não pode ser alterado porque a assinatura já "
-                        "possui pagamento confirmado. A programação para ciclos futuros "
-                        "será disponibilizada em uma etapa específica."
-                    ),
-                )
+                # O ciclo atual pode possuir pagamento, usos e referências financeiras.
+                # Para assinaturas antigas ou já pagas, programamos somente o dia que
+                # será usado pela próxima renovação, sem reescrever o período vigente.
+                assinatura.dia_vencimento = dia
+                db.commit()
+                db.refresh(assinatura)
+                return assinatura
 
             status_cobranca_encerrada = {
                 "cancelled",
@@ -1109,7 +1118,7 @@ def listar_pagamentos_cliente_service(
 
 
 # =========================
-# RENOVAÃ‡ÃƒÆ’O DE ASSINATURA
+# RENOVAÇÃO DE ASSINATURA
 # =========================
 
 
@@ -1337,7 +1346,7 @@ def renovar_assinatura_service(db, assinatura_id: int, dados, usuario_logado):
 
 
 # =========================
-# SUSPENSÃƒÆ’O E REATIVAÃ‡ÃƒÆ’O
+# SUSPENSÃO E REATIVAÇÃO
 # =========================
 
 def suspender_assinatura_service(
@@ -1489,7 +1498,7 @@ def reativar_assinatura_service(
 
 
 # =========================
-# INADIMPLÃƒÅ NCIA
+# INADIMPLÊNCIA
 # =========================
 
 def verificar_inadimplencia_service(
