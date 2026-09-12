@@ -16,9 +16,18 @@ from portal_cliente.models import ClienteAcesso, ClienteConfirmacaoEmail, Portal
 from portal_cliente.schemas import (
     AcessoResponse, AlterarSenhaRequest, AtivarAcessoRequest, ConfiguracaoPortalResponse,
     ConfiguracaoPortalUpdate, ConfirmarEmailRequest, PortalLoginRequest, PortalMeResponse,
-    PrimeiroAcessoRequest, PrimeiroAcessoResponse, ReenviarCodigoRequest, TokenResponse,
+    PortalAssinarPixRequest, PortalAssinaturaResponse, PortalPagamentoResponse,
+    PortalPixResponse, PortalPlanoDisponivelResponse, PrimeiroAcessoRequest,
+    PrimeiroAcessoResponse, ReenviarCodigoRequest, TokenResponse,
+    PortalComandaResponse,
 )
 from portal_cliente.security import obter_acesso_cliente
+from schemas import AssinaturaClienteCreate
+from services.mercado_pago_service import (
+    gerar_pix_assinatura_service,
+    obter_configuracao as obter_configuracao_mercado_pago,
+)
+from services.plano_service import criar_assinatura_service
 from services.sequencia_service import gerar_codigo_comercial
 
 router = APIRouter(prefix="/portal-cliente", tags=["Portal do Cliente"])
@@ -165,6 +174,240 @@ def me(acesso: ClienteAcesso = Depends(obter_acesso_cliente), db: Session = Depe
             "barbearia_nome": acesso.barbearia.nome, "barbearia_slug": acesso.barbearia.slug,
             "permitir_agendamento_portal": config.permitir_agendamento_portal,
             "deve_trocar_senha": acesso.deve_trocar_senha, "ultimo_acesso_em": acesso.ultimo_acesso_em}
+
+
+def _plano_resumo(plano):
+    if plano is None:
+        return None
+    return {
+        "id": plano.id,
+        "nome": plano.nome,
+        "descricao": plano.descricao,
+        "quantidade_servicos": plano.quantidade_servicos or 0,
+        "validade_dias": plano.validade_dias or 0,
+    }
+
+
+@router.get(
+    "/planos-disponiveis",
+    response_model=list[PortalPlanoDisponivelResponse],
+)
+def planos_disponiveis(
+    acesso: ClienteAcesso = Depends(obter_acesso_cliente),
+    db: Session = Depends(get_db),
+):
+    planos = (
+        db.query(models.Plano)
+        .filter(
+            models.Plano.barbearia_id == acesso.barbearia_id,
+            models.Plano.ativo.is_(True),
+        )
+        .order_by(models.Plano.valor.asc(), models.Plano.nome.asc())
+        .all()
+    )
+    return [
+        {
+            **_plano_resumo(plano),
+            "valor": plano.valor,
+            "valor_pix": plano.valor_pix if plano.valor_pix is not None else plano.valor,
+            "valor_cartao": (
+                plano.valor_cartao if plano.valor_cartao is not None else plano.valor
+            ),
+            "max_parcelas_cartao": max(1, plano.max_parcelas_cartao or 1),
+        }
+        for plano in planos
+    ]
+
+
+@router.get("/minhas-comandas-abertas", response_model=list[PortalComandaResponse])
+def minhas_comandas_abertas(
+    acesso: ClienteAcesso = Depends(obter_acesso_cliente),
+    db: Session = Depends(get_db),
+):
+    comandas = (
+        db.query(models.Comanda)
+        .filter(
+            models.Comanda.barbearia_id == acesso.barbearia_id,
+            models.Comanda.cliente_id == acesso.cliente_id,
+            models.Comanda.status.ilike("aberta"),
+        )
+        .order_by(models.Comanda.data_abertura.desc())
+        .all()
+    )
+    return [
+        {
+            "id": comanda.id,
+            "status": comanda.status,
+            "total": comanda.total or 0,
+            "data_abertura": comanda.data_abertura,
+            "barbeiro_nome": comanda.barbeiro_nome,
+            "itens": [
+                {
+                    "descricao": item.descricao,
+                    "quantidade": item.quantidade or 1,
+                    "valor_unitario": item.valor_unitario or 0,
+                    "subtotal": item.subtotal or 0,
+                }
+                for item in comanda.itens
+            ],
+        }
+        for comanda in comandas
+    ]
+
+
+@router.post(
+    "/assinar/{plano_id}/pix",
+    response_model=PortalPixResponse,
+)
+def assinar_plano_pix(
+    plano_id: int,
+    dados: PortalAssinarPixRequest,
+    acesso: ClienteAcesso = Depends(obter_acesso_cliente),
+    db: Session = Depends(get_db),
+):
+    plano = (
+        db.query(models.Plano)
+        .filter(
+            models.Plano.id == plano_id,
+            models.Plano.barbearia_id == acesso.barbearia_id,
+            models.Plano.ativo.is_(True),
+        )
+        .first()
+    )
+    if plano is None:
+        raise HTTPException(status_code=404, detail="Plano não encontrado ou indisponível.")
+
+    configuracao_mp = obter_configuracao_mercado_pago(db, acesso.barbearia_id)
+    if (
+        configuracao_mp is None
+        or not configuracao_mp.ativo
+        or not configuracao_mp.access_token_encrypted
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Pagamento online ainda não está disponível nesta barbearia. "
+                "Nenhuma assinatura foi criada."
+            ),
+        )
+
+    assinatura = (
+        db.query(models.AssinaturaCliente)
+        .filter(
+            models.AssinaturaCliente.barbearia_id == acesso.barbearia_id,
+            models.AssinaturaCliente.cliente_id == acesso.cliente_id,
+            models.AssinaturaCliente.status.in_(
+                ["PENDENTE", "ATIVO", "VENCIDO", "SUSPENSO"]
+            ),
+        )
+        .order_by(models.AssinaturaCliente.id.desc())
+        .first()
+    )
+
+    if assinatura is not None:
+        pode_repetir_pix = (
+            (assinatura.status or "").upper() == "PENDENTE"
+            and (assinatura.status_pagamento or "").upper() != "PAGO"
+            and assinatura.plano_id == plano.id
+        )
+        if not pode_repetir_pix:
+            raise HTTPException(
+                status_code=409,
+                detail="Você já possui uma assinatura em aberto.",
+            )
+    else:
+        assinatura = criar_assinatura_service(
+            db=db,
+            dados=AssinaturaClienteCreate(
+                cliente_id=acesso.cliente_id,
+                plano_id=plano.id,
+                dia_vencimento=dados.dia_vencimento,
+            ),
+            usuario_logado=acesso,
+        )
+
+    return gerar_pix_assinatura_service(
+        db,
+        assinatura.id,
+        acesso.email,
+        acesso,
+        None,
+    )
+
+
+@router.get("/minha-assinatura", response_model=PortalAssinaturaResponse | None)
+def minha_assinatura(
+    acesso: ClienteAcesso = Depends(obter_acesso_cliente),
+    db: Session = Depends(get_db),
+):
+    assinatura = (
+        db.query(models.AssinaturaCliente)
+        .filter(
+            models.AssinaturaCliente.barbearia_id == acesso.barbearia_id,
+            models.AssinaturaCliente.cliente_id == acesso.cliente_id,
+        )
+        .order_by(models.AssinaturaCliente.id.desc())
+        .first()
+    )
+    if assinatura is None:
+        return None
+
+    return {
+        "id": assinatura.id,
+        "plano": _plano_resumo(assinatura.plano),
+        "plano_programado": _plano_resumo(assinatura.plano_programado),
+        "data_inicio": assinatura.data_inicio,
+        "data_fim": assinatura.data_fim,
+        "data_ultimo_pagamento": assinatura.data_ultimo_pagamento,
+        "data_proximo_vencimento": assinatura.data_proximo_vencimento,
+        "dia_vencimento": assinatura.dia_vencimento,
+        "valor_mensal": assinatura.valor_mensal or 0,
+        "valor_proxima_cobranca": assinatura.valor_proxima_cobranca,
+        "usos_disponiveis": assinatura.usos_disponiveis or 0,
+        "usos_proximo_ciclo": assinatura.usos_proximo_ciclo,
+        "status": (assinatura.status or "PENDENTE").upper(),
+        "status_pagamento": (
+            assinatura.status_pagamento or "PENDENTE_PAGAMENTO"
+        ).upper(),
+    }
+
+
+@router.get("/meus-pagamentos", response_model=list[PortalPagamentoResponse])
+def meus_pagamentos(
+    acesso: ClienteAcesso = Depends(obter_acesso_cliente),
+    db: Session = Depends(get_db),
+):
+    pagamentos = (
+        db.query(models.PagamentoPlano)
+        .join(
+            models.AssinaturaCliente,
+            models.AssinaturaCliente.id == models.PagamentoPlano.assinatura_id,
+        )
+        .join(models.Plano, models.Plano.id == models.PagamentoPlano.plano_id)
+        .filter(
+            models.PagamentoPlano.cliente_id == acesso.cliente_id,
+            models.AssinaturaCliente.cliente_id == acesso.cliente_id,
+            models.AssinaturaCliente.barbearia_id == acesso.barbearia_id,
+            models.Plano.barbearia_id == acesso.barbearia_id,
+        )
+        .order_by(models.PagamentoPlano.data_pagamento.desc())
+        .all()
+    )
+    return [
+        {
+            "id": pagamento.id,
+            "assinatura_id": pagamento.assinatura_id,
+            "plano_id": pagamento.plano_id,
+            "plano_nome": pagamento.plano.nome,
+            "valor": pagamento.valor,
+            "forma_pagamento": pagamento.forma_pagamento,
+            "status": (pagamento.status or "PENDENTE").upper(),
+            "referencia_mes": pagamento.referencia_mes,
+            "observacoes": pagamento.observacoes,
+            "data_pagamento": pagamento.data_pagamento,
+        }
+        for pagamento in pagamentos
+    ]
 
 
 @router.put("/minha-senha")

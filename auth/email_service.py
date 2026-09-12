@@ -1,4 +1,4 @@
-import os
+﻿import os
 
 import resend
 from dotenv import load_dotenv
@@ -25,7 +25,7 @@ class ErroEnvioEmail(Exception):
 def validar_configuracao_resend():
     if not RESEND_API_KEY:
         raise ErroEnvioEmail(
-            "Configura??o do Resend incompleta: "
+            "Configuração do Resend incompleta: "
             "RESEND_API_KEY."
         )
 
@@ -41,22 +41,22 @@ def enviar_email_recuperacao_senha(
     nome_exibicao = (
         nome_usuario.strip()
         if nome_usuario
-        else "usu?rio"
+        else "usuário"
     )
 
-    assunto = "Redefini??o de senha ? BarbSist"
+    assunto = "Redefinição de senha — BarbSist"
 
-    texto = f"""Ol?, {nome_exibicao}.
+    texto = f"""Olá, {nome_exibicao}.
 
-Recebemos uma solicita??o para redefinir a senha da sua conta no BarbSist.
+Recebemos uma solicitação para redefinir a senha da sua conta no BarbSist.
 
 Acesse o link abaixo:
 
 {link_recuperacao}
 
-Este link expira em {expira_minutos} minutos e poder? ser utilizado apenas uma vez.
+Este link expira em {expira_minutos} minutos e poderá ser utilizado apenas uma vez.
 
-Caso voc? n?o tenha solicitado essa altera??o, ignore este e-mail.
+Caso você não tenha solicitado essa alteração, ignore este e-mail.
 
 Atenciosamente,
 Equipe BarbSist
@@ -74,13 +74,13 @@ Equipe BarbSist
             font-size: 24px;
             margin-bottom: 24px;
         ">
-            Redefini??o de senha
+            Redefinição de senha
         </h1>
 
-        <p>Ol?, {nome_exibicao}.</p>
+        <p>Olá, {nome_exibicao}.</p>
 
         <p>
-            Recebemos uma solicita??o para redefinir
+            Recebemos uma solicitação para redefinir
             a senha da sua conta no BarbSist.
         </p>
 
@@ -104,11 +104,11 @@ Equipe BarbSist
         <p>
             Este link expira em
             <strong>{expira_minutos} minutos</strong>
-            e poder? ser utilizado apenas uma vez.
+            e poderá ser utilizado apenas uma vez.
         </p>
 
         <p>
-            Caso voc? n?o tenha solicitado essa altera??o,
+            Caso você não tenha solicitado essa alteração,
             ignore este e-mail.
         </p>
 
@@ -134,6 +134,6 @@ Equipe BarbSist
 
     except Exception as erro:
         raise ErroEnvioEmail(
-            "N?o foi poss?vel enviar o e-mail "
-            "de recupera??o de senha."
+            "Não foi possível enviar o e-mail "
+            "de recuperação de senha."
         ) from erro

@@ -71,25 +71,57 @@ def login_service(
             "token_type": "bearer",
         }
 
-    # 2) Usuários operacionais continuam obrigatoriamente vinculados a uma barbearia.
-    if not barbearia_slug or not barbearia_slug.strip():
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Barbearia, usuário ou senha inválidos.",
+    # 2) Usuários operacionais: o slug antigo permanece aceito para
+    # compatibilidade, mas deixa de ser obrigatório. Sem slug, a barbearia é
+    # derivada do vínculo do próprio usuário.
+    usuario = None
+    barbearia = None
+
+    if barbearia_slug and barbearia_slug.strip():
+        slug_normalizado = normalizar_slug(barbearia_slug)
+
+        barbearia = (
+            db.query(models.Barbearia)
+            .filter(models.Barbearia.slug == slug_normalizado)
+            .first()
         )
 
-    slug_normalizado = normalizar_slug(barbearia_slug)
+        if barbearia is not None:
+            usuario = (
+                db.query(models.Usuario)
+                .filter(
+                    models.Usuario.barbearia_id == barbearia.id,
+                    models.Usuario.email == email_normalizado,
+                    models.Usuario.ativo.is_(True),
+                )
+                .first()
+            )
+    else:
+        usuarios = (
+            db.query(models.Usuario)
+            .filter(
+                models.Usuario.email == email_normalizado,
+                models.Usuario.perfil != "superadmin",
+                models.Usuario.ativo.is_(True),
+            )
+            .all()
+        )
 
-    barbearia = (
-        db.query(models.Barbearia)
-        .filter(models.Barbearia.slug == slug_normalizado)
-        .first()
-    )
+        # E-mails de usuários internos devem ser únicos na plataforma. Caso
+        # dados antigos contrariem essa regra, não escolhemos uma barbearia
+        # silenciosamente.
+        if len(usuarios) == 1:
+            usuario = usuarios[0]
+            barbearia = (
+                db.query(models.Barbearia)
+                .filter(models.Barbearia.id == usuario.barbearia_id)
+                .first()
+            )
 
-    if not barbearia:
+    if usuario is None or barbearia is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Barbearia, usuário ou senha inválidos.",
+            detail="E-mail ou senha inválidos.",
         )
 
     if not barbearia.ativa:
@@ -101,20 +133,10 @@ def login_service(
             ),
         )
 
-    usuario = (
-        db.query(models.Usuario)
-        .filter(
-            models.Usuario.barbearia_id == barbearia.id,
-            models.Usuario.email == email_normalizado,
-            models.Usuario.ativo.is_(True),
-        )
-        .first()
-    )
-
     if not usuario or not verificar_senha(senha, usuario.senha_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Barbearia, usuário ou senha inválidos.",
+            detail="E-mail ou senha inválidos.",
         )
 
     token = criar_token_acesso({

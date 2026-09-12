@@ -190,32 +190,54 @@ def solicitar_recuperacao_senha_service(
     barbearia_id = None
 
     if usuario is None:
-        if not slug_normalizado:
-            return {"mensagem": MENSAGEM_RECUPERACAO}
-
-        barbearia = (
-            db.query(models.Barbearia)
-            .filter(
-                models.Barbearia.slug == slug_normalizado,
-                models.Barbearia.ativa.is_(True),
+        if slug_normalizado:
+            # Compatibilidade temporária com clientes antigos da API.
+            barbearia = (
+                db.query(models.Barbearia)
+                .filter(
+                    models.Barbearia.slug == slug_normalizado,
+                    models.Barbearia.ativa.is_(True),
+                )
+                .first()
             )
-            .first()
-        )
-        if barbearia is None:
-            return {"mensagem": MENSAGEM_RECUPERACAO}
+            if barbearia is None:
+                return {"mensagem": MENSAGEM_RECUPERACAO}
 
-        usuario = (
-            db.query(models.Usuario)
-            .filter(
-                models.Usuario.barbearia_id == barbearia.id,
-                models.Usuario.email == email_normalizado,
-                models.Usuario.ativo.is_(True),
+            usuario = (
+                db.query(models.Usuario)
+                .filter(
+                    models.Usuario.barbearia_id == barbearia.id,
+                    models.Usuario.email == email_normalizado,
+                    models.Usuario.ativo.is_(True),
+                )
+                .first()
             )
-            .first()
-        )
-        if usuario is None:
-            return {"mensagem": MENSAGEM_RECUPERACAO}
-        barbearia_id = barbearia.id
+            if usuario is None:
+                return {"mensagem": MENSAGEM_RECUPERACAO}
+            barbearia_id = barbearia.id
+        else:
+            # Fluxo oficial: o e-mail identifica a conta interna sem expor slug.
+            candidatos = (
+                db.query(models.Usuario)
+                .join(
+                    models.Barbearia,
+                    models.Barbearia.id == models.Usuario.barbearia_id,
+                )
+                .filter(
+                    models.Usuario.email == email_normalizado,
+                    models.Usuario.perfil != "superadmin",
+                    models.Usuario.ativo.is_(True),
+                    models.Barbearia.ativa.is_(True),
+                )
+                .all()
+            )
+
+            # Nunca escolhe silenciosamente entre contas ambíguas.
+            if len(candidatos) != 1:
+                return {"mensagem": MENSAGEM_RECUPERACAO}
+
+            usuario = candidatos[0]
+            barbearia_id = usuario.barbearia_id
 
     token_original = secrets.token_urlsafe(48)
     token_hash = gerar_hash_token(token_original)
