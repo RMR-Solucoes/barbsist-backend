@@ -602,7 +602,7 @@ def _comanda_do_cliente_para_cobranca(db, comanda_id, acesso):
             models.Comanda.barbearia_id == acesso.barbearia_id,
             models.Comanda.cliente_id == acesso.cliente_id,
         )
-        .with_for_update()
+        .with_for_update(of=models.Comanda)
         .first()
     )
     if not comanda:
