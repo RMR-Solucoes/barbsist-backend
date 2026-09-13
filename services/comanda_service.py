@@ -66,7 +66,7 @@ def _buscar_comanda_para_operacao(
             models.Comanda.id == comanda_id,
             models.Comanda.barbearia_id == barbearia_id,
         )
-        .with_for_update()
+        .with_for_update(of=models.Comanda)
         .first()
     )
 
