@@ -17,7 +17,7 @@ from portal_cliente.schemas import (
     AcessoResponse, AlterarSenhaRequest, AtivarAcessoRequest, ConfiguracaoPortalResponse,
     ConfiguracaoPortalUpdate, ConfirmarEmailRequest, PortalLoginRequest, PortalMeResponse,
     PortalAssinarPixRequest, PortalAssinaturaResponse, PortalPagamentoResponse,
-    PortalComandaPixRequest,
+    PortalComandaCartaoRequest, PortalComandaPixRequest,
     PortalPixResponse, PortalPlanoDisponivelResponse, PrimeiroAcessoRequest,
     PrimeiroAcessoResponse, ReenviarCodigoRequest, TokenResponse,
     PortalComandaResponse,
@@ -25,10 +25,12 @@ from portal_cliente.schemas import (
 from portal_cliente.security import obter_acesso_cliente
 from schemas import AssinaturaClienteCreate
 from services.mercado_pago_service import (
+    gerar_cartao_comanda_portal_service,
     gerar_pix_comanda_portal_service,
     gerar_pix_assinatura_service,
     obter_cobranca_comanda_portal_service,
     obter_configuracao as obter_configuracao_mercado_pago,
+    status_mercado_pago_portal_service,
 )
 from services.comanda_service import calcular_total_devido_comanda
 from services.plano_service import criar_assinatura_service
@@ -270,6 +272,14 @@ def obter_cobranca_comanda(
     return obter_cobranca_comanda_portal_service(db, comanda_id, acesso)
 
 
+@router.get("/mercado-pago/status")
+def status_mercado_pago_portal(
+    acesso: ClienteAcesso = Depends(obter_acesso_cliente),
+    db: Session = Depends(get_db),
+):
+    return status_mercado_pago_portal_service(db, acesso)
+
+
 @router.post("/comandas/{comanda_id}/pix", response_model=PortalPixResponse)
 def pagar_comanda_pix(
     comanda_id: int,
@@ -283,6 +293,16 @@ def pagar_comanda_pix(
         dados.payer_email,
         acesso,
     )
+
+
+@router.post("/comandas/{comanda_id}/cartao", response_model=PortalPixResponse)
+def pagar_comanda_cartao(
+    comanda_id: int,
+    dados: PortalComandaCartaoRequest,
+    acesso: ClienteAcesso = Depends(obter_acesso_cliente),
+    db: Session = Depends(get_db),
+):
+    return gerar_cartao_comanda_portal_service(db, comanda_id, dados, acesso)
 
 
 @router.post(

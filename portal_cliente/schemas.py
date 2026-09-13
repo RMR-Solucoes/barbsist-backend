@@ -88,6 +88,16 @@ class PortalComandaPixRequest(BaseModel):
     payer_email: str | None = Field(default=None, max_length=255)
 
 
+class PortalComandaCartaoRequest(BaseModel):
+    token: str = Field(min_length=1)
+    installments: int = Field(default=1, ge=1, le=12)
+    payment_method_id: str = Field(min_length=1, max_length=80)
+    issuer_id: int | None = None
+    payer_email: str = Field(min_length=3, max_length=255)
+    identification_type: str | None = Field(default=None, max_length=30)
+    identification_number: str | None = Field(default=None, max_length=40)
+
+
 class PortalPixResponse(BaseModel):
     cobranca_id: int
     assinatura_id: int | None = None
