@@ -561,6 +561,21 @@ class ItemComanda(Base):
         nullable=True
     )
 
+    assinatura_id = Column(
+        Integer,
+        ForeignKey("assinaturas_clientes.id"),
+        nullable=True,
+        index=True,
+    )
+
+    plano_id = Column(
+        Integer,
+        ForeignKey("planos.id"),
+        nullable=True,
+    )
+
+    referencia_mes = Column(String, nullable=True)
+
     pago_com_plano = Column(
         Boolean,
         default=False,
@@ -580,6 +595,8 @@ class ItemComanda(Base):
 
     servico = relationship("Servico")
     produto = relationship("Produto")
+    assinatura = relationship("AssinaturaCliente")
+    plano_mensalidade = relationship("Plano", foreign_keys=[plano_id])
 
     uso_plano = relationship(
         "UsoPlano",

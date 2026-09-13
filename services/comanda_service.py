@@ -10,7 +10,11 @@ from services.caixa_service import registrar_entrada_caixa
 from services.comissao_service import calcular_e_registrar_comissao
 from services.plano_service import (
     atualizar_status_assinatura,
-    usar_plano_service
+    usar_plano_service,
+    selecionar_plano_para_cobranca_service,
+    valor_cobranca_assinatura,
+    referencia_cobranca_assinatura,
+    confirmar_pagamento_assinatura_service,
 )
 from services.estoque_service import (
     devolver_estoque,
@@ -95,6 +99,85 @@ def calcular_total_devido_comanda(itens):
             and item.pago_com_plano is True
         )
     )
+
+
+def adicionar_mensalidade_plano_comanda_service(
+    db, comanda_id: int, assinatura_id: int, usuario_logado
+):
+    comanda = _buscar_comanda_para_operacao(db, comanda_id, usuario_logado)
+
+    if comanda.status != "aberta":
+        raise HTTPException(status_code=400, detail="A comanda não está aberta.")
+    if comanda.cliente_id is None:
+        raise HTTPException(status_code=400, detail="Vincule um cliente à comanda.")
+
+    validar_sem_pagamento_online_pendente(
+        db, comanda.id, comanda.barbearia_id
+    )
+
+    assinatura = (
+        db.query(models.AssinaturaCliente)
+        .filter(
+            models.AssinaturaCliente.id == assinatura_id,
+            models.AssinaturaCliente.barbearia_id == comanda.barbearia_id,
+            models.AssinaturaCliente.cliente_id == comanda.cliente_id,
+        )
+        .first()
+    )
+    if assinatura is None:
+        raise HTTPException(status_code=404, detail="Assinatura do cliente não encontrada.")
+
+    atualizar_status_assinatura(assinatura)
+    status = (assinatura.status or "").upper()
+    status_pagamento = (assinatura.status_pagamento or "").upper()
+    if status in {"CANCELADO", "ENCERRADO"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Assinatura cancelada ou encerrada não pode ser cobrada pela comanda.",
+        )
+    if status == "ATIVO" and status_pagamento == "PAGO":
+        raise HTTPException(status_code=409, detail="A assinatura não possui mensalidade pendente.")
+
+    plano = selecionar_plano_para_cobranca_service(db, assinatura, usuario_logado)
+    referencia = referencia_cobranca_assinatura(assinatura, datetime.now())
+    valor = round(float(valor_cobranca_assinatura(assinatura, plano.valor)), 2)
+    if valor <= 0:
+        raise HTTPException(status_code=400, detail="A mensalidade não possui valor para cobrança.")
+
+    item_existente = (
+        db.query(models.ItemComanda)
+        .join(models.Comanda, models.Comanda.id == models.ItemComanda.comanda_id)
+        .filter(
+            models.ItemComanda.assinatura_id == assinatura.id,
+            models.ItemComanda.referencia_mes == referencia,
+            models.ItemComanda.tipo == "mensalidade_plano",
+            models.Comanda.status == "aberta",
+        )
+        .first()
+    )
+    if item_existente:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A mensalidade {referencia} já está em uma comanda aberta.",
+        )
+
+    item = models.ItemComanda(
+        comanda_id=comanda.id,
+        tipo="mensalidade_plano",
+        descricao=f"Mensalidade {plano.nome} - {referencia}",
+        quantidade=1,
+        valor_unitario=valor,
+        subtotal=valor,
+        assinatura_id=assinatura.id,
+        plano_id=plano.id,
+        referencia_mes=referencia,
+        pago_com_plano=False,
+    )
+    db.add(item)
+    comanda.total = round(float(comanda.total or 0) + valor, 2)
+    db.commit()
+    db.refresh(item)
+    return item
 
 
 def obter_assinatura_disponivel_comanda_service(
@@ -245,9 +328,31 @@ def obter_assinatura_disponivel_comanda_service(
             f"{assinatura_exibida.status_pagamento}."
         )
 
+    status_assinatura = (assinatura_exibida.status or "").upper()
+    status_pagamento = (assinatura_exibida.status_pagamento or "").upper()
+    pode_pagar_mensalidade = (
+        plano is not None
+        and status_assinatura not in {"CANCELADO", "ENCERRADO"}
+        and not (
+            status_assinatura == "ATIVO"
+            and status_pagamento == "PAGO"
+        )
+    )
+    referencia_mensalidade = referencia_cobranca_assinatura(
+        assinatura_exibida, datetime.now()
+    )
+    valor_mensalidade = (
+        round(float(valor_cobranca_assinatura(assinatura_exibida, plano.valor)), 2)
+        if plano is not None
+        else 0
+    )
+
     return {
         "possui_assinatura": True,
         "pode_usar_plano": pode_usar,
+        "pode_pagar_mensalidade": pode_pagar_mensalidade,
+        "valor_mensalidade": valor_mensalidade,
+        "referencia_mensalidade": referencia_mensalidade,
         "motivo": motivo,
         "assinatura": {
             "id": assinatura_exibida.id,
@@ -548,6 +653,47 @@ def fechar_comanda_service(
             )
         )
 
+        itens_mensalidade = [
+            item for item in itens
+            if item.tipo == "mensalidade_plano"
+        ]
+        total_mensalidades = sum(
+            float(item.subtotal or 0)
+            for item in itens_mensalidade
+        )
+        total_operacional = round(
+            float(total_devido) - total_mensalidades,
+            2,
+        )
+
+        for item in itens_mensalidade:
+            assinatura = db.query(models.AssinaturaCliente).filter(
+                models.AssinaturaCliente.id == item.assinatura_id,
+                models.AssinaturaCliente.barbearia_id == comanda.barbearia_id,
+                models.AssinaturaCliente.cliente_id == comanda.cliente_id,
+            ).first()
+            plano_mensalidade = db.query(models.Plano).filter(
+                models.Plano.id == item.plano_id,
+                models.Plano.barbearia_id == comanda.barbearia_id,
+            ).first()
+            if assinatura is None or plano_mensalidade is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Mensalidade da comanda sem assinatura ou plano válido.",
+                )
+            confirmar_pagamento_assinatura_service(
+                db=db,
+                assinatura=assinatura,
+                plano=plano_mensalidade,
+                forma_pagamento=(forma_pagamento or "PIX").upper(),
+                observacoes=f"Pagamento pela comanda #{comanda.id}",
+                usuario_id=getattr(usuario_logado, "id", None),
+                referencia_mes=item.referencia_mes,
+                realizar_commit=False,
+                valor_pagamento=float(item.subtotal or 0),
+                aceitar_plano_cobrado=True,
+            )
+
         possui_item_plano = any(
             item.tipo == "servico"
             and item.pago_com_plano is True
@@ -589,13 +735,13 @@ def fechar_comanda_service(
             datetime.now()
         )
 
-        if total_devido > 0:
+        if total_operacional > 0:
             registrar_entrada_caixa(
                 db=db,
                 descricao=(
                     f"Comanda #{comanda.id}"
                 ),
-                valor=total_devido,
+                valor=total_operacional,
                 forma_pagamento=forma_pagamento,
                 barbearia_id=comanda.barbearia_id,
                 origem="COMANDA",

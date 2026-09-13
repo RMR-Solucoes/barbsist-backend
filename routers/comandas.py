@@ -18,6 +18,7 @@ from schemas import (
     ComandaResponse,
     AdicionarServicoComanda,
     AdicionarProdutoComanda,
+    AdicionarMensalidadePlanoComanda,
     ItemComandaResponse,
     FecharComanda,
     UsarPlanoItemComandaRequest
@@ -29,7 +30,8 @@ from services.comanda_service import (
     usar_plano_em_item_comanda_service,
     remover_item_comanda_service,
     cancelar_comanda_service,
-    validar_sem_pagamento_online_pendente
+    validar_sem_pagamento_online_pendente,
+    adicionar_mensalidade_plano_comanda_service,
 )
 
 from services.estoque_service import (
@@ -521,6 +523,24 @@ def adicionar_produto_na_comanda(
     db.refresh(novo_item)
 
     return novo_item
+
+
+@router.post(
+    "/{comanda_id}/mensalidade-plano",
+    response_model=ItemComandaResponse,
+)
+def adicionar_mensalidade_plano_na_comanda(
+    comanda_id: int,
+    item: AdicionarMensalidadePlanoComanda,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin_gerente_recepcao_ou_barbeiro),
+):
+    return adicionar_mensalidade_plano_comanda_service(
+        db=db,
+        comanda_id=comanda_id,
+        assinatura_id=item.assinatura_id,
+        usuario_logado=usuario_logado,
+    )
 
 
 @router.get(

@@ -245,6 +245,10 @@ class AdicionarProdutoComanda(ItemComandaBase):
     produto_id: int
 
 
+class AdicionarMensalidadePlanoComanda(BaseModel):
+    assinatura_id: int
+
+
 class ItemComandaResponse(BaseModel):
     id: int
 
@@ -258,6 +262,9 @@ class ItemComandaResponse(BaseModel):
 
     servico_id: Optional[int] = None
     produto_id: Optional[int] = None
+    assinatura_id: Optional[int] = None
+    plano_id: Optional[int] = None
+    referencia_mes: Optional[str] = None
 
     pago_com_plano: bool = False
     uso_plano_id: Optional[int] = None
