@@ -17,6 +17,7 @@ from portal_cliente.schemas import (
     AcessoResponse, AlterarSenhaRequest, AtivarAcessoRequest, ConfiguracaoPortalResponse,
     ConfiguracaoPortalUpdate, ConfirmarEmailRequest, PortalLoginRequest, PortalMeResponse,
     PortalAssinarPixRequest, PortalAssinaturaResponse, PortalPagamentoResponse,
+    PortalComandaPixRequest,
     PortalPixResponse, PortalPlanoDisponivelResponse, PrimeiroAcessoRequest,
     PrimeiroAcessoResponse, ReenviarCodigoRequest, TokenResponse,
     PortalComandaResponse,
@@ -24,9 +25,12 @@ from portal_cliente.schemas import (
 from portal_cliente.security import obter_acesso_cliente
 from schemas import AssinaturaClienteCreate
 from services.mercado_pago_service import (
+    gerar_pix_comanda_portal_service,
     gerar_pix_assinatura_service,
+    obter_cobranca_comanda_portal_service,
     obter_configuracao as obter_configuracao_mercado_pago,
 )
+from services.comanda_service import calcular_total_devido_comanda
 from services.plano_service import criar_assinatura_service
 from services.sequencia_service import gerar_codigo_comercial
 
@@ -234,11 +238,14 @@ def minhas_comandas_abertas(
         .order_by(models.Comanda.data_abertura.desc())
         .all()
     )
-    return [
-        {
+    resultado = []
+    for comanda in comandas:
+        itens = list(comanda.itens or [])
+        total_devido = round(float(calcular_total_devido_comanda(itens)), 2)
+        resultado.append({
             "id": comanda.id,
             "status": comanda.status,
-            "total": comanda.total or 0,
+            "total": total_devido,
             "data_abertura": comanda.data_abertura,
             "barbeiro_nome": comanda.barbeiro_nome,
             "itens": [
@@ -248,11 +255,34 @@ def minhas_comandas_abertas(
                     "valor_unitario": item.valor_unitario or 0,
                     "subtotal": item.subtotal or 0,
                 }
-                for item in comanda.itens
+                for item in itens
             ],
-        }
-        for comanda in comandas
-    ]
+        })
+    return resultado
+
+
+@router.get("/comandas/{comanda_id}/cobranca")
+def obter_cobranca_comanda(
+    comanda_id: int,
+    acesso: ClienteAcesso = Depends(obter_acesso_cliente),
+    db: Session = Depends(get_db),
+):
+    return obter_cobranca_comanda_portal_service(db, comanda_id, acesso)
+
+
+@router.post("/comandas/{comanda_id}/pix", response_model=PortalPixResponse)
+def pagar_comanda_pix(
+    comanda_id: int,
+    dados: PortalComandaPixRequest,
+    acesso: ClienteAcesso = Depends(obter_acesso_cliente),
+    db: Session = Depends(get_db),
+):
+    return gerar_pix_comanda_portal_service(
+        db,
+        comanda_id,
+        dados.payer_email,
+        acesso,
+    )
 
 
 @router.post(

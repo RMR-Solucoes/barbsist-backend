@@ -84,6 +84,10 @@ class PortalAssinarPixRequest(BaseModel):
     dia_vencimento: int = Field(ge=1, le=28)
 
 
+class PortalComandaPixRequest(BaseModel):
+    payer_email: str | None = Field(default=None, max_length=255)
+
+
 class PortalPixResponse(BaseModel):
     cobranca_id: int
     assinatura_id: int | None = None
