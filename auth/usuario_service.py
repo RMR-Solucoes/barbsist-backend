@@ -209,22 +209,45 @@ def criar_usuario_service(
     """
     Cria um usuário e o vincula à barbearia correta.
 
-    O superadmin deve informar barbearia_id.
+    O superadmin contextual utiliza automaticamente a barbearia
+    selecionada. Somente o superadmin global precisa informar
+    barbearia_id explicitamente.
     O administrador comum somente pode criar usuários
     dentro da própria barbearia.
     """
 
     if usuario_eh_superadmin(usuario_logado):
-        if dados.barbearia_id is None:
+        barbearia_contextual_id = obter_barbearia_id(
+            usuario_logado,
+            permitir_superadmin_sem_barbearia=True,
+        )
+
+        if barbearia_contextual_id is not None:
+            if (
+                dados.barbearia_id is not None
+                and dados.barbearia_id != barbearia_contextual_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        "Não é permitido criar usuários fora da "
+                        "barbearia selecionada."
+                    ),
+                )
+
+            barbearia_id = barbearia_contextual_id
+
+        elif dados.barbearia_id is None:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    "O superadministrador deve informar "
+                    "O superadministrador deve selecionar ou informar "
                     "a barbearia do novo usuário."
                 )
             )
 
-        barbearia_id = dados.barbearia_id
+        else:
+            barbearia_id = dados.barbearia_id
 
     else:
         barbearia_id = obter_barbearia_id(
@@ -268,7 +291,6 @@ def criar_usuario_service(
     usuario_existente = (
         db.query(models.Usuario)
         .filter(
-            models.Usuario.barbearia_id == barbearia_id,
             models.Usuario.email == email_normalizado
         )
         .first()
@@ -278,8 +300,8 @@ def criar_usuario_service(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "Já existe um usuário com este e-mail "
-                "nesta barbearia."
+                "Já existe um usuário interno com este e-mail "
+                "no BarbSist. Utilize outro e-mail."
             )
         )
 
@@ -402,7 +424,6 @@ def atualizar_usuario_service(
     usuario_email = db.query(
         models.Usuario
     ).filter(
-        models.Usuario.barbearia_id == barbearia_id,
         models.Usuario.email == email_normalizado,
         models.Usuario.id != usuario_id
     ).first()
@@ -411,8 +432,8 @@ def atualizar_usuario_service(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "Já existe um usuário com este e-mail "
-                "nesta barbearia."
+                "Já existe outro usuário interno com este e-mail "
+                "no BarbSist. Utilize outro e-mail."
             )
         )
 
