@@ -659,6 +659,115 @@ def _cobranca_comanda_pendente(db, comanda_id, barbearia_id):
     )
 
 
+def cancelar_cobranca_comanda_service(db, comanda_id, usuario):
+    """Cancela no Mercado Pago uma cobranca ainda pagavel da comanda."""
+    def status_cancelamento(order):
+        pagamento = (_order_payment(order).get("status") or "").lower()
+        status_order = (order.get("status") or "").lower()
+        if pagamento == "processed":
+            return pagamento
+        if status_order in {
+            "canceled", "cancelled", "expired", "rejected", "refunded", "charged_back"
+        }:
+            return status_order
+        return pagamento or status_order
+
+    bid = obter_barbearia_id(usuario)
+    comanda = (
+        db.query(models.Comanda)
+        .filter(
+            models.Comanda.id == int(comanda_id),
+            models.Comanda.barbearia_id == bid,
+        )
+        .with_for_update(of=models.Comanda)
+        .first()
+    )
+    if not comanda:
+        raise HTTPException(status_code=404, detail="Comanda nao encontrada nesta barbearia.")
+    if (comanda.status or "").lower() != "aberta":
+        raise HTTPException(status_code=409, detail="Somente comandas abertas permitem cancelar cobranca online.")
+
+    cobrancas = (
+        db.query(models.MercadoPagoCobranca)
+        .filter(
+            models.MercadoPagoCobranca.barbearia_id == bid,
+            models.MercadoPagoCobranca.origem_negocio == "COMANDA",
+            models.MercadoPagoCobranca.origem_id == comanda.id,
+            models.MercadoPagoCobranca.processado.is_(False),
+            models.MercadoPagoCobranca.status.in_([
+                "pending", "action_required", "in_process", "created"
+            ]),
+        )
+        .order_by(models.MercadoPagoCobranca.id.desc())
+        .with_for_update()
+        .all()
+    )
+    if not cobrancas:
+        return {
+            "mensagem": "A comanda nao possui cobranca online pendente.",
+            "comanda_id": comanda.id,
+            "canceladas": 0,
+        }
+
+    cfg = obter_configuracao(db, bid)
+    if not cfg or not cfg.ativo or not cfg.access_token_encrypted:
+        raise HTTPException(
+            status_code=409,
+            detail="Mercado Pago desconectado. Reconecte a conta para conferir e cancelar a cobranca com seguranca.",
+        )
+    token = obter_access_token_valido(db, cfg)
+    terminais_sem_pagamento = {
+        "canceled", "cancelled", "expired", "rejected", "refunded", "charged_back"
+    }
+
+    canceladas = 0
+    for cobranca in cobrancas:
+        if not cobranca.order_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Cobranca pendente sem identificador da order. Verifique no Mercado Pago antes de liberar a comanda.",
+            )
+
+        order = _api("GET", f"/v1/orders/{cobranca.order_id}", token)
+        status_remoto = status_cancelamento(order)
+        if status_remoto == "processed":
+            raise HTTPException(
+                status_code=409,
+                detail="O pagamento ja foi processado no Mercado Pago. Aguarde a confirmacao automatica da comanda.",
+            )
+
+        if status_remoto not in terminais_sem_pagamento:
+            resposta = _api(
+                "POST",
+                f"/v1/orders/{cobranca.order_id}/cancel",
+                token,
+                headers={"X-Idempotency-Key": str(uuid.uuid4())},
+            )
+            status_apos_cancelar = status_cancelamento(resposta)
+            if status_apos_cancelar not in {"canceled", "cancelled"}:
+                conferida = _api("GET", f"/v1/orders/{cobranca.order_id}", token)
+                status_apos_cancelar = status_cancelamento(conferida)
+            if status_apos_cancelar not in terminais_sem_pagamento:
+                raise HTTPException(
+                    status_code=409,
+                    detail="O Mercado Pago nao confirmou o cancelamento. A comanda continua bloqueada por seguranca.",
+                )
+            status_remoto = status_apos_cancelar
+
+        cobranca.status = "canceled" if status_remoto in {"canceled", "cancelled"} else status_remoto
+        cobranca.status_detail = "cancelado_pelo_operador"
+        cobranca.processado = True
+        cobranca.processado_em = datetime.now()
+        canceladas += 1
+
+    db.commit()
+    return {
+        "mensagem": "Cobranca online cancelada. A comanda foi liberada para pagamento manual ou cancelamento.",
+        "comanda_id": comanda.id,
+        "canceladas": canceladas,
+    }
+
+
 def gerar_pix_comanda_portal_service(db, comanda_id, payer_email, acesso):
     comanda, valor = _comanda_do_cliente_para_cobranca(db, comanda_id, acesso)
     cfg = _configuracao_portal(db, acesso)
@@ -993,6 +1102,15 @@ def _processar_order_webhook(
         return {
             "status": "ignorado",
             "motivo": "cobrança não pertence ao BarbSist",
+        }
+
+    if c.processado and (c.status or "").lower() in {
+        "canceled", "cancelled", "expired", "rejected"
+    }:
+        db.commit()
+        return {
+            "status": "ignorado",
+            "motivo": "cobranca cancelada ou encerrada",
         }
 
     # Defesa em profundidade: configuração, cobrança e tenant precisam

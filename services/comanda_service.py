@@ -1033,3 +1033,100 @@ def cancelar_comanda_service(
             status_code=500,
             detail=f"Erro ao cancelar comanda: {erro}",
         )
+
+
+def excluir_comanda_teste_service(
+    db,
+    comanda_id: int,
+    usuario_logado,
+):
+    """Exclui somente uma comanda sem efeitos financeiros.
+
+    Comandas fechadas, cobrancas aprovadas, caixa e comissao sao bloqueios
+    absolutos. Itens de uma comanda aberta sao revertidos antes da exclusao.
+    """
+    try:
+        comanda = _buscar_comanda_para_operacao(
+            db=db,
+            comanda_id=comanda_id,
+            usuario_logado=usuario_logado,
+        )
+        situacao = (comanda.status or "").lower()
+        if situacao not in {"aberta", "cancelada"}:
+            raise HTTPException(
+                status_code=409,
+                detail="Somente comandas abertas ou canceladas, sem pagamento, podem ser excluidas como teste.",
+            )
+
+        caixa = db.query(models.Caixa).filter(
+            models.Caixa.barbearia_id == comanda.barbearia_id,
+            models.Caixa.origem == "COMANDA",
+            models.Caixa.referencia_id == comanda.id,
+        ).first()
+        if caixa:
+            raise HTTPException(
+                status_code=409,
+                detail="Esta comanda possui movimentacao de caixa e nao pode ser excluida. Utilize o fluxo de estorno.",
+            )
+
+        comissao = db.query(models.Comissao).filter(
+            models.Comissao.barbearia_id == comanda.barbearia_id,
+            models.Comissao.comanda_id == comanda.id,
+        ).first()
+        if comissao:
+            raise HTTPException(
+                status_code=409,
+                detail="Esta comanda possui comissao registrada e nao pode ser excluida.",
+            )
+
+        cobrancas = db.query(models.MercadoPagoCobranca).filter(
+            models.MercadoPagoCobranca.barbearia_id == comanda.barbearia_id,
+            models.MercadoPagoCobranca.origem_negocio == "COMANDA",
+            models.MercadoPagoCobranca.origem_id == comanda.id,
+        ).with_for_update().all()
+        estados_pagos = {"processed", "approved", "refunded", "charged_back"}
+        estados_pendentes = {"pending", "action_required", "in_process", "created"}
+        if any((c.status or "").lower() in estados_pagos for c in cobrancas):
+            raise HTTPException(
+                status_code=409,
+                detail="Esta comanda possui historico financeiro no Mercado Pago e nao pode ser excluida.",
+            )
+        if any(
+            not c.processado and (c.status or "").lower() in estados_pendentes
+            for c in cobrancas
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Cancele primeiro a cobranca online pendente antes de excluir a comanda.",
+            )
+
+        itens = db.query(models.ItemComanda).filter(
+            models.ItemComanda.comanda_id == comanda.id
+        ).all()
+        if situacao == "aberta":
+            for item in itens:
+                _reverter_item_aberto(db, item, comanda)
+
+        for cobranca in cobrancas:
+            db.delete(cobranca)
+        for item in itens:
+            db.delete(item)
+        db.flush()
+        db.delete(comanda)
+        db.commit()
+
+        return {
+            "mensagem": "Comanda de teste excluida com sucesso.",
+            "comanda_id": comanda_id,
+            "excluida": True,
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as erro:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao excluir comanda de teste: {erro}",
+        )

@@ -30,6 +30,7 @@ from services.comanda_service import (
     usar_plano_em_item_comanda_service,
     remover_item_comanda_service,
     cancelar_comanda_service,
+    excluir_comanda_teste_service,
     validar_sem_pagamento_online_pendente,
     adicionar_mensalidade_plano_comanda_service,
 )
@@ -40,7 +41,13 @@ from services.estoque_service import (
 )
 
 from auth.permissions import (
-    admin_gerente_recepcao_ou_barbeiro
+    admin_gerente_recepcao_ou_barbeiro,
+    admin_gerente_ou_recepcao,
+    admin_ou_gerente,
+)
+
+from services.mercado_pago_service import (
+    cancelar_cobranca_comanda_service,
 )
 
 from auth.dependencies import (
@@ -628,3 +635,25 @@ def remover_item_comanda(comanda_id: int, item_id: int, db: Session = Depends(ge
 @router.put("/{comanda_id}/cancelar")
 def cancelar_comanda(comanda_id: int, db: Session = Depends(get_db), usuario_logado=Depends(admin_gerente_recepcao_ou_barbeiro)):
     return cancelar_comanda_service(db, comanda_id, usuario_logado)
+
+
+@router.post("/{comanda_id}/cancelar-cobranca-online")
+def cancelar_cobranca_online_comanda(
+    comanda_id: int,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin_gerente_ou_recepcao),
+):
+    return cancelar_cobranca_comanda_service(
+        db, comanda_id, usuario_logado
+    )
+
+
+@router.delete("/{comanda_id}")
+def excluir_comanda_teste(
+    comanda_id: int,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin_ou_gerente),
+):
+    return excluir_comanda_teste_service(
+        db, comanda_id, usuario_logado
+    )
