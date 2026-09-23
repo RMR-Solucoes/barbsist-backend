@@ -760,6 +760,13 @@ def gerar_pix_cobranca_service(db, dados, u, base):
         return gerar_pix_assinatura_service(
             db, int(dados.origem_id), dados.payer_email, u, base
         )
+    if origem == "COMANDA":
+        acesso = _acesso_administrativo_comanda(
+            db, int(dados.origem_id), u, dados.payer_email
+        )
+        return gerar_pix_comanda_portal_service(
+            db, int(dados.origem_id), dados.payer_email, acesso
+        )
     raise HTTPException(
         status_code=501,
         detail=f"A origem {origem} já está reservada na arquitetura, mas será ativada na etapa específica de integração.",
@@ -772,9 +779,51 @@ def gerar_cartao_cobranca_service(db, dados, u, base):
         return gerar_cartao_assinatura_service(
             db, int(dados.origem_id), dados, u, base
         )
+    if origem == "COMANDA":
+        acesso = _acesso_administrativo_comanda(
+            db, int(dados.origem_id), u, dados.payer_email
+        )
+        return gerar_cartao_comanda_portal_service(
+            db, int(dados.origem_id), dados, acesso
+        )
     raise HTTPException(
         status_code=501,
         detail=f"A origem {origem} já está reservada na arquitetura, mas será ativada na etapa específica de integração.",
+    )
+
+
+def _acesso_administrativo_comanda(db, comanda_id, usuario, payer_email=None):
+    """Adapta o usuário interno ao núcleo seguro de cobrança da comanda."""
+    from types import SimpleNamespace
+
+    barbearia_id = obter_barbearia_id(usuario)
+    comanda = (
+        db.query(models.Comanda)
+        .filter(
+            models.Comanda.id == int(comanda_id),
+            models.Comanda.barbearia_id == barbearia_id,
+        )
+        .first()
+    )
+    if not comanda:
+        raise HTTPException(status_code=404, detail="Comanda não encontrada nesta barbearia.")
+    if comanda.cliente_id is None:
+        cliente_email = None
+    else:
+        cliente = (
+            db.query(models.Cliente)
+            .filter(
+                models.Cliente.id == comanda.cliente_id,
+                models.Cliente.barbearia_id == barbearia_id,
+            )
+            .first()
+        )
+        cliente_email = getattr(cliente, "email", None) if cliente else None
+
+    return SimpleNamespace(
+        barbearia_id=barbearia_id,
+        cliente_id=comanda.cliente_id,
+        email=(payer_email or cliente_email or "").strip(),
     )
 
 
