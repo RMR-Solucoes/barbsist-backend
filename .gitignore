@@ -36,3 +36,6 @@ htmlcov/
 .idea/
 .DS_Store
 Thumbs.db
+
+# local safety copies
+*.backup_*
