@@ -327,6 +327,10 @@ class Barbeiro(BarbeariaMixin, Base):
         default=50.0,
         nullable=False
     )
+    valor_aluguel_cadeira = Column(Float, nullable=True)
+    periodicidade_aluguel = Column(String, nullable=True)
+    dia_vencimento_aluguel = Column(Integer, nullable=True)
+    valor_diaria = Column(Float, nullable=True)
 
     especialidades = Column(
         String,
@@ -1704,6 +1708,49 @@ class AssinaturaSaaS(Base):
     plano = relationship("PlanoSaaS")
 
 
+class AdequacaoPlanoSaaS(Base):
+    """Adequacao temporaria de capacidade da assinatura SaaS."""
+    __tablename__ = "adequacoes_plano_saas"
+
+    id = Column(Integer, primary_key=True, index=True)
+    assinatura_id = Column(Integer, ForeignKey("assinaturas_saas.id", ondelete="RESTRICT"), nullable=False, index=True)
+    barbearia_id = Column(Integer, ForeignKey("barbearias.id", ondelete="RESTRICT"), nullable=False, index=True)
+    plano_origem_id = Column(Integer, ForeignKey("planos_saas.id", ondelete="RESTRICT"), nullable=False, index=True)
+    plano_destino_id = Column(Integer, ForeignKey("planos_saas.id", ondelete="RESTRICT"), nullable=True, index=True)
+    quantidade_barbeiros = Column(Integer, nullable=False, default=0)
+    limite_origem = Column(Integer, nullable=False, default=1)
+    status = Column(String, nullable=False, default="PENDENTE", index=True)
+    criado_em = Column(DateTime, nullable=False, default=datetime.now)
+    atualizado_em = Column(DateTime, nullable=False, default=datetime.now, onupdate=datetime.now)
+    prazo_regularizacao = Column(DateTime, nullable=False, index=True)
+    finalizado_em = Column(DateTime, nullable=True)
+    observacao = Column(String, nullable=True)
+
+    assinatura = relationship("AssinaturaSaaS")
+    barbearia = relationship("Barbearia")
+    plano_origem = relationship("PlanoSaaS", foreign_keys=[plano_origem_id])
+    plano_destino = relationship("PlanoSaaS", foreign_keys=[plano_destino_id])
+
+
+class AdequacaoPlanoSaaSBarbeiro(Base):
+    """Profissionais que compoem o excesso de uma adequacao SaaS."""
+    __tablename__ = "adequacoes_plano_saas_barbeiros"
+    __table_args__ = (
+        UniqueConstraint("adequacao_id", "barbeiro_id", name="uq_adequacao_saas_barbeiro"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    adequacao_id = Column(Integer, ForeignKey("adequacoes_plano_saas.id", ondelete="CASCADE"), nullable=False, index=True)
+    barbeiro_id = Column(Integer, ForeignKey("barbeiros.id", ondelete="RESTRICT"), nullable=False, index=True)
+    excedente = Column(Boolean, nullable=False, default=True)
+    bloqueado_por_plano = Column(Boolean, nullable=False, default=False)
+    incluido_em = Column(DateTime, nullable=False, default=datetime.now)
+    bloqueado_em = Column(DateTime, nullable=True)
+
+    adequacao = relationship("AdequacaoPlanoSaaS")
+    barbeiro = relationship("Barbeiro")
+
+
 class PagamentoSaaS(Base):
     __tablename__ = "pagamentos_saas"
     __table_args__ = (
@@ -1745,6 +1792,12 @@ class PagamentoSaaS(Base):
 
     processado = Column(Boolean, nullable=False, default=False)
     processado_em = Column(DateTime, nullable=True)
+
+    # V474_C42B_CICLO_PAGAMENTO
+    # Intervalo financeiro efetivamente financiado por este pagamento.
+    # NULL em registros legados quando o ciclo nao puder ser comprovado.
+    ciclo_inicio = Column(DateTime, nullable=True)
+    ciclo_fim = Column(DateTime, nullable=True)
     data_criacao = Column(DateTime, nullable=False, default=datetime.now)
 
     assinatura = relationship("AssinaturaSaaS")

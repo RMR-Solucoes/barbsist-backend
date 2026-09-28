@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
 
 import models
+from services.adequacao_plano_saas_service import validar_barbeiro_liberado_por_plano
 
 from auth.tenant import (
     buscar_da_barbearia,
@@ -209,6 +210,10 @@ def criar_agendamento_service(db, dados, usuario_logado):
         dados.barbeiro_id,
         usuario_logado,
     )
+    try:
+        validar_barbeiro_liberado_por_plano(db, barbearia_id, dados.barbeiro_id)
+    except ValueError as erro:
+        raise HTTPException(status_code=403, detail=str(erro))
     servico = validar_servico(
         db,
         dados.servico_id,
@@ -370,6 +375,13 @@ def buscar_agendamento_service(db, agendamento_id: int, usuario_logado):
         mensagem_nao_encontrado="Agendamento não encontrado.",
     )
 
+    try:
+        validar_barbeiro_liberado_por_plano(
+            db, barbearia_id, agendamento.barbeiro_id
+        )
+    except ValueError as erro:
+        raise HTTPException(status_code=403, detail=str(erro))
+
     _validar_acesso_barbeiro_agendamento(
         usuario_logado,
         agendamento,
@@ -464,6 +476,14 @@ def atualizar_status_agendamento_service(
         agendamento_id,
         usuario_logado,
     )
+
+    if status_normalizado == "em_atendimento":
+        try:
+            validar_barbeiro_liberado_por_plano(
+                db, obter_barbearia_id(usuario_logado), agendamento.barbeiro_id
+            )
+        except ValueError as erro:
+            raise HTTPException(status_code=403, detail=str(erro))
 
     atual = (agendamento.status or "").strip().lower()
     transicoes = {
@@ -627,6 +647,13 @@ def reagendar_agendamento_service(
         agendamento.servico_id,
         usuario_logado,
     )
+
+    try:
+        validar_barbeiro_liberado_por_plano(
+            db, obter_barbearia_id(usuario_logado), agendamento.barbeiro_id
+        )
+    except ValueError as erro:
+        raise HTTPException(status_code=403, detail=str(erro))
 
     novo_fim = nova_data_hora_inicio + timedelta(
         minutes=servico.tempo_medio_minutos or 30

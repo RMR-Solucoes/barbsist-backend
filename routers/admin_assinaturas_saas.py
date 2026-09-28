@@ -7,6 +7,7 @@ from schemas import (
     AssinaturaSaaSResponse,
     AssinaturaSaaSAuditoriaResponse,
     BloquearAssinaturaSaaSRequest,
+    ConcederTesteSaaSRequest,
     LiberarAssinaturaSaaSRequest,
     PagamentoSaaSResponse,
     PlanoSaaSCreate,
@@ -16,6 +17,7 @@ from schemas import (
 from services.assinatura_saas_service import (
     atualizar_plano_saas_service,
     bloquear_assinatura_service,
+    conceder_teste_saas_service,
     criar_plano_saas_service,
     liberar_assinatura_manual_service,
     listar_assinaturas_admin_service,
@@ -42,6 +44,21 @@ def atualizar_plano(plano_id: int, dados: PlanoSaaSUpdate, db: Session = Depends
 @router.get("/assinaturas", response_model=list[AssinaturaSaaSResponse])
 def assinaturas(db: Session = Depends(get_db), usuario_logado=Depends(superadmin)):
     return listar_assinaturas_admin_service(db)
+
+
+@router.post(
+    "/barbearias/{barbearia_id}/teste",
+    response_model=AssinaturaSaaSResponse,
+)
+def conceder_teste(
+    barbearia_id: int,
+    dados: ConcederTesteSaaSRequest,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(superadmin),
+):
+    return conceder_teste_saas_service(
+        db, barbearia_id, dados, usuario_logado
+    )
 
 @router.get("/pagamentos", response_model=list[PagamentoSaaSResponse])
 def pagamentos(db: Session = Depends(get_db), usuario_logado=Depends(superadmin)):

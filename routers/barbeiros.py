@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+﻿from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 import models
@@ -18,6 +18,7 @@ from services.barbeiro_service import (
     atualizar_barbeiro_service,
     inativar_barbeiro_service,
     reativar_barbeiro_service,
+    excluir_barbeiro_definitivamente_service,
 )
 
 
@@ -147,3 +148,17 @@ def reativar_barbeiro(
         db=db,
         usuario_logado=usuario_logado
     )
+
+
+@router.delete(
+    "/{barbeiro_id}/excluir"
+)
+def excluir_barbeiro_definitivamente(
+    barbeiro_id: int,
+    db: Session = Depends(get_db),
+    usuario_logado: models.Usuario = Depends(admin_ou_gerente)
+):
+    return excluir_barbeiro_definitivamente_service(
+        barbeiro_id=barbeiro_id, db=db, usuario_logado=usuario_logado
+    )
+

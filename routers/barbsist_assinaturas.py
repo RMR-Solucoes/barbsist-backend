@@ -3,13 +3,17 @@ from sqlalchemy.orm import Session
 
 from auth.permissions import admin, superadmin
 from database import get_db
+from auth.tenant import obter_barbearia_id
 from schemas import (
+    AdequacaoPlanoSaaSResponse,
     AssinaturaSaaSResponse,
     CheckoutSaaSCartaoRequest,
     CheckoutSaaSPixRequest,
     PagamentoSaaSResponse,
     PlanoSaaSResponse,
 )
+from services.adequacao_plano_saas_service import obter_adequacao_pendente_saas
+from services.adequacao_financeira_saas_service import previa_financeira_adequacao_saas
 from services.assinatura_saas_service import (
     checkout_cartao_saas_service,
     checkout_pix_saas_service,
@@ -30,6 +34,31 @@ def listar_planos(db: Session = Depends(get_db), usuario_logado=Depends(admin)):
 @router.get("/minha-assinatura", response_model=AssinaturaSaaSResponse | None)
 def minha_assinatura(db: Session = Depends(get_db), usuario_logado=Depends(admin)):
     return minha_assinatura_saas_service(db, usuario_logado)
+
+
+@router.get("/adequacao-pendente", response_model=AdequacaoPlanoSaaSResponse | None)
+def adequacao_pendente(db: Session = Depends(get_db), usuario_logado=Depends(admin)):
+    barbearia_id = obter_barbearia_id(usuario_logado)
+    return obter_adequacao_pendente_saas(db, barbearia_id)
+
+
+
+# V474_C4_ROUTE_PREVIA_FINANCEIRA
+@router.get("/adequacao-pendente/previa-financeira")
+def previa_financeira_adequacao(
+    forma_pagamento: str = "PIX",
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(admin),
+):
+    barbearia_id = obter_barbearia_id(
+        usuario_logado
+    )
+
+    return previa_financeira_adequacao_saas(
+        db,
+        barbearia_id=barbearia_id,
+        forma_pagamento=forma_pagamento,
+    )
 
 
 @router.get("/mercado-pago/public-key")

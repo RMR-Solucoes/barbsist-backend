@@ -3,7 +3,7 @@ import hmac
 import json
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from calendar import monthrange
 from urllib import error, request
 
@@ -247,9 +247,22 @@ def _precos_fundador_para_plano(plano):
     if int(plano.periodo_meses or 1) != 1:
         return None
 
-    return FUNDADORES_PRECOS.get(
+    precos = FUNDADORES_PRECOS.get(
         int(plano.limite_barbeiros or 0)
     )
+
+    if not precos:
+        return None
+
+    # Uma promocao nunca pode ficar mais cara que o catalogo normal. Isso e
+    # especialmente importante para o novo Solo de R$ 19,90.
+    return {
+        "pix": min(float(precos["pix"]), float(plano.valor_pix)),
+        "cartao": min(
+            float(precos["cartao"]),
+            float(plano.valor_cartao),
+        ),
+    }
 
 
 def _promocao_fundador_ativa(assinatura, agora=None):
@@ -469,6 +482,54 @@ def atualizar_plano_saas_service(db, plano_id, dados):
 
     valores = dados.model_dump(exclude_unset=True)
 
+    novo_limite = valores.get("limite_barbeiros")
+    if (
+        novo_limite is not None
+        and int(novo_limite) < int(obj.limite_barbeiros or 1)
+    ):
+        assinaturas_ativas = (
+            db.query(models.AssinaturaSaaS)
+            .filter(
+                models.AssinaturaSaaS.plano_id == obj.id,
+                models.AssinaturaSaaS.status == "ATIVA",
+            )
+            .all()
+        )
+
+        excedentes = []
+        for assinatura in assinaturas_ativas:
+            total_ativos = (
+                db.query(models.Barbeiro)
+                .filter(
+                    models.Barbeiro.barbearia_id
+                    == assinatura.barbearia_id,
+                    models.Barbeiro.ativo.is_(True),
+                )
+                .count()
+            )
+            if total_ativos > int(novo_limite):
+                excedentes.append(
+                    {
+                        "barbearia_id": assinatura.barbearia_id,
+                        "barbeiros_ativos": total_ativos,
+                    }
+                )
+
+        if excedentes:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "codigo": "REDUCAO_LIMITE_INCOMPATIVEL",
+                    "mensagem": (
+                        "O limite nao pode ser reduzido enquanto existirem "
+                        "barbearias assinantes com mais profissionais ativos "
+                        "que o novo limite."
+                    ),
+                    "novo_limite": int(novo_limite),
+                    "barbearias_excedentes": excedentes,
+                },
+            )
+
     if (
         "limite_barbeiros" in valores
         and valores["limite_barbeiros"] is not None
@@ -566,6 +627,7 @@ def _criar_pagamento_base(
     valor_original=None,
     valor_credito=0.0,
     resgate=None,
+    commit=True,
 ):
     valor = round(float(valor or 0), 2)
 
@@ -652,10 +714,676 @@ def _criar_pagamento_base(
         resgate.pagamento_saas_id = p.id
         resgate.assinatura_saas_id = ass.id
 
-    db.commit()
-    db.refresh(p)
+    # V474_C54D_R1_CONTROLE_TRANSACAO
+    # Fluxos historicos usam commit=True.
+    # Adequacao usa commit=False e deixa a transacao
+    # sob controle do chamador.
+    if commit:
+        db.commit()
+        db.refresh(p)
 
     return p
+
+
+
+def _validar_plano_compativel_com_barbeiros(
+    db,
+    barbearia_id,
+    plano,
+):
+    """Bloqueia checkout de plano menor que a equipe ativa da barbearia."""
+    (
+        db.query(models.Barbearia)
+        .filter(models.Barbearia.id == barbearia_id)
+        .with_for_update()
+        .first()
+    )
+
+    barbeiros_ativos = (
+        db.query(models.Barbeiro)
+        .filter(
+            models.Barbeiro.barbearia_id == barbearia_id,
+            models.Barbeiro.ativo.is_(True),
+        )
+        .count()
+    )
+
+    limite = max(1, int(plano.limite_barbeiros or 1))
+
+    if barbeiros_ativos > limite:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "codigo": "PLANO_INCOMPATIVEL_COM_EQUIPE",
+                "mensagem": (
+                    f"Sua barbearia possui {barbeiros_ativos} barbeiro(s) ativo(s). "
+                    f"O plano {plano.nome} permite ate {limite}. "
+                    "Escolha um plano compativel com sua equipe."
+                ),
+                "plano_id": plano.id,
+                "plano_nome": plano.nome,
+                "limite_barbeiros": limite,
+                "barbeiros_ativos": barbeiros_ativos,
+            },
+        )
+
+
+
+# ============================================================
+# V4.7.4-C5.2
+# CHECKOUT FINANCEIRO DE ADEQUACAO DE PLANO
+# ============================================================
+
+# V474_C54A_REFERENCIA_TENTATIVA
+def _external_reference_adequacao(
+    adequacao_id: int,
+    tentativa: int = 1,
+) -> str:
+    """
+    Referencia auditavel da cobranca de adequacao.
+
+    Tentativa 1 preserva o formato historico:
+        BARBSIST-ADEQ-123
+
+    Tentativas posteriores:
+        BARBSIST-ADEQ-123-T2
+        BARBSIST-ADEQ-123-T3
+    """
+    aid = int(adequacao_id)
+    tentativa = int(tentativa)
+
+    if tentativa <= 1:
+        return f"BARBSIST-ADEQ-{aid}"
+
+    return f"BARBSIST-ADEQ-{aid}-T{tentativa}"
+
+
+def _parse_external_reference_adequacao(
+    external_reference: str,
+):
+    """
+    Aceita referencias historicas e versionadas.
+
+    Retorna:
+        (adequacao_id, tentativa)
+
+    Exemplos:
+        BARBSIST-ADEQ-2     -> (2, 1)
+        BARBSIST-ADEQ-2-T2  -> (2, 2)
+    """
+    referencia = str(external_reference or "").strip()
+
+    prefixo = "BARBSIST-ADEQ-"
+
+    if not referencia.startswith(prefixo):
+        raise ValueError("REFERENCIA_NAO_E_ADEQUACAO")
+
+    restante = referencia[len(prefixo):]
+
+    partes = restante.split("-T", 1)
+
+    try:
+        adequacao_id = int(partes[0])
+    except (TypeError, ValueError):
+        raise ValueError("ADEQUACAO_ID_INVALIDO")
+
+    if adequacao_id <= 0:
+        raise ValueError("ADEQUACAO_ID_INVALIDO")
+
+    tentativa = 1
+
+    if len(partes) == 2:
+        try:
+            tentativa = int(partes[1])
+        except (TypeError, ValueError):
+            raise ValueError("TENTATIVA_INVALIDA")
+
+        if tentativa < 2:
+            raise ValueError("TENTATIVA_INVALIDA")
+
+    return adequacao_id, tentativa
+
+
+# V474_C54A_P2_RETRY_SEGURO
+def _resolver_tentativa_pagamento_adequacao(
+    db,
+    *,
+    adequacao_id: int,
+    barbearia_id: int,
+):
+    """
+    Resolve a tentativa vigente de pagamento da adequacao.
+
+    Regras:
+    - nenhuma tentativa: cria tentativa 1;
+    - pending/in_process/approved: reutiliza;
+    - processado=True: reutiliza;
+    - tentativa terminal rejeitada/cancelada: libera N+1.
+
+    O historico nunca e apagado nem sobrescrito.
+    """
+    prefixo = _external_reference_adequacao(
+        adequacao_id
+    )
+
+    pagamentos = (
+        db.query(models.PagamentoSaaS)
+        .filter(
+            models.PagamentoSaaS.barbearia_id
+            == barbearia_id,
+            models.PagamentoSaaS.external_reference.like(
+                f"{prefixo}%"
+            ),
+        )
+        .order_by(
+            models.PagamentoSaaS.id.asc()
+        )
+        .all()
+    )
+
+    tentativas = []
+
+    for pagamento in pagamentos:
+        try:
+            aid, tentativa = (
+                _parse_external_reference_adequacao(
+                    pagamento.external_reference
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+
+        if int(aid) != int(adequacao_id):
+            continue
+
+        tentativas.append(
+            (tentativa, pagamento)
+        )
+
+    if not tentativas:
+        return {
+            "existente": None,
+            "tentativa": 1,
+            "external_reference": (
+                _external_reference_adequacao(
+                    adequacao_id,
+                    1,
+                )
+            ),
+        }
+
+    tentativas.sort(
+        key=lambda item: (
+            item[0],
+            item[1].id or 0,
+        )
+    )
+
+    tentativa_atual, pagamento_atual = (
+        tentativas[-1]
+    )
+
+    status = str(
+        pagamento_atual.status or ""
+    ).strip().lower()
+
+    # Pagamento ja processado nunca pode gerar
+    # nova cobranca.
+    if bool(pagamento_atual.processado):
+        return {
+            "existente": pagamento_atual,
+            "tentativa": tentativa_atual,
+            "external_reference": (
+                pagamento_atual.external_reference
+            ),
+        }
+
+    # Estados que representam cobranca ainda valida,
+    # em andamento ou aprovada.
+    estados_reutilizaveis = {
+        "pending",
+        "in_process",
+        "approved",
+        "authorized",
+    }
+
+    if status in estados_reutilizaveis:
+        return {
+            "existente": pagamento_atual,
+            "tentativa": tentativa_atual,
+            "external_reference": (
+                pagamento_atual.external_reference
+            ),
+        }
+
+    # Somente estados terminais conhecidos podem
+    # liberar uma nova tentativa.
+    estados_retry = {
+        "rejected",
+        "cancelled",
+        "canceled",
+        "cancelled_by_user",
+    }
+
+    if status in estados_retry:
+        proxima = tentativa_atual + 1
+
+        return {
+            "existente": None,
+            "tentativa": proxima,
+            "external_reference": (
+                _external_reference_adequacao(
+                    adequacao_id,
+                    proxima,
+                )
+            ),
+        }
+
+    # Fail-closed para status desconhecido.
+    return {
+        "existente": pagamento_atual,
+        "tentativa": tentativa_atual,
+        "external_reference": (
+            pagamento_atual.external_reference
+        ),
+    }
+
+
+def _pagamento_adequacao_existente(
+    db,
+    *,
+    adequacao_id: int,
+    barbearia_id: int,
+):
+    """
+    Compatibilidade com chamadas existentes.
+
+    Retorna somente uma cobranca que deva ser
+    reutilizada. Tentativa terminal rejeitada/cancelada
+    retorna None e permite retry.
+    """
+    resolucao = (
+        _resolver_tentativa_pagamento_adequacao(
+            db,
+            adequacao_id=adequacao_id,
+            barbearia_id=barbearia_id,
+        )
+    )
+
+    return resolucao["existente"]
+
+
+def _preparar_checkout_adequacao(
+    db,
+    *,
+    barbearia_id: int,
+    forma_pagamento: str,
+):
+    """
+    Recalcula a adequacao exclusivamente no backend.
+
+    Nenhum valor recebido do frontend participa do calculo.
+    """
+    from services.adequacao_financeira_saas_service import (
+        previa_financeira_adequacao_saas,
+    )
+
+    forma = (forma_pagamento or "").strip().upper()
+
+    if forma not in {"PIX", "CARTAO"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Forma de pagamento invalida para adequacao.",
+        )
+
+    previa = previa_financeira_adequacao_saas(
+        db,
+        barbearia_id=barbearia_id,
+        forma_pagamento=forma,
+    )
+
+    if (
+        previa.get("status") != "OK"
+        or not previa.get("pode_pagar")
+    ):
+        codigo = previa.get("status") or "ADEQUACAO_INDISPONIVEL"
+
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "codigo": codigo,
+                "mensagem": (
+                    "A adequacao ainda nao pode ser cobrada. "
+                    "Revise os dados do ciclo atual da assinatura."
+                ),
+                "previa": previa,
+            },
+        )
+
+    adequacao_id = previa.get("adequacao_id")
+    assinatura_id = previa.get("assinatura_id")
+    plano_destino_id = previa.get("plano_destino_id")
+
+    if not adequacao_id or not assinatura_id or not plano_destino_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "codigo": "PREVIA_INCOMPLETA",
+                "mensagem": (
+                    "A previa financeira nao possui todos os "
+                    "identificadores necessarios para cobranca."
+                ),
+            },
+        )
+
+    valor = round(
+        float(previa.get("valor_adequacao") or 0),
+        2,
+    )
+
+    if valor <= 0:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "codigo": "VALOR_ADEQUACAO_INVALIDO",
+                "mensagem": (
+                    "O valor calculado da adequacao deve ser positivo."
+                ),
+            },
+        )
+
+    ass = (
+        db.query(models.AssinaturaSaaS)
+        .filter(
+            models.AssinaturaSaaS.id == assinatura_id,
+            models.AssinaturaSaaS.barbearia_id == barbearia_id,
+        )
+        .with_for_update()
+        .first()
+    )
+
+    if ass is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Assinatura SaaS nao encontrada.",
+        )
+
+    adequacao = (
+        db.query(models.AdequacaoPlanoSaaS)
+        .filter(
+            models.AdequacaoPlanoSaaS.id == adequacao_id,
+            models.AdequacaoPlanoSaaS.barbearia_id == barbearia_id,
+            models.AdequacaoPlanoSaaS.status == "PENDENTE",
+        )
+        .with_for_update()
+        .first()
+    )
+
+    if adequacao is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Adequacao pendente nao encontrada.",
+        )
+
+    if adequacao.assinatura_id != ass.id:
+        raise HTTPException(
+            status_code=409,
+            detail="Adequacao nao pertence a assinatura atual.",
+        )
+
+    if adequacao.plano_destino_id != plano_destino_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Plano destino da adequacao foi alterado.",
+        )
+
+    plano = (
+        db.query(models.PlanoSaaS)
+        .filter(
+            models.PlanoSaaS.id == plano_destino_id,
+            models.PlanoSaaS.ativo.is_(True),
+        )
+        .first()
+    )
+
+    if plano is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Plano destino da adequacao nao encontrado.",
+        )
+
+    resolucao_tentativa = (
+        _resolver_tentativa_pagamento_adequacao(
+            db,
+            adequacao_id=adequacao.id,
+            barbearia_id=barbearia_id,
+        )
+    )
+
+    return {
+        "previa": previa,
+        "assinatura": ass,
+        "adequacao": adequacao,
+        "plano": plano,
+        "valor": valor,
+        "existente": (
+            resolucao_tentativa["existente"]
+        ),
+        "tentativa": (
+            resolucao_tentativa["tentativa"]
+        ),
+        "external_reference": (
+            resolucao_tentativa[
+                "external_reference"
+            ]
+        ),
+    }
+
+
+def checkout_pix_adequacao_saas_service(
+    db,
+    *,
+    usuario,
+    payer_email: str,
+    base_url=None,
+):
+    bid = obter_barbearia_id(usuario)
+
+    email = (payer_email or "").strip()
+
+    if "@" not in email:
+        raise HTTPException(
+            status_code=400,
+            detail="Informe um e-mail valido.",
+        )
+
+    ctx = _preparar_checkout_adequacao(
+        db,
+        barbearia_id=bid,
+        forma_pagamento="PIX",
+    )
+
+    existente = ctx["existente"]
+
+    if existente is not None:
+        return existente
+
+    ass = ctx["assinatura"]
+    plano = ctx["plano"]
+    valor = ctx["valor"]
+    ext = ctx["external_reference"]
+
+    # Idempotencia deterministica por adequacao e tentativa.
+    tentativa = int(ctx.get("tentativa") or 1)
+
+    idem = (
+        f"BARBSIST-ADEQ-PIX-"
+        f"{ctx['adequacao'].id}"
+        f"-T{tentativa}"
+    )
+
+    payload = {
+        "transaction_amount": valor,
+        "description": (
+            f"BarbSist - Adequacao para {plano.nome}"
+        ),
+        "payment_method_id": "pix",
+        "payer": {
+            "email": email,
+        },
+        "external_reference": ext,
+        "notification_url": _webhook_url(base_url),
+    }
+
+    resp = _api(
+        "POST",
+        "/v1/payments",
+        payload,
+        {
+            "X-Idempotency-Key": idem,
+        },
+    )
+
+    return _criar_pagamento_base(
+        db=db,
+        ass=ass,
+        plano=plano,
+        tipo="PIX",
+        valor=valor,
+        payer_email=email,
+        installments=1,
+        method_id="pix",
+        resposta=resp,
+        idem=idem,
+        ext=ext,
+        valor_original=valor,
+        valor_credito=0.0,
+        commit=False,
+    )
+
+
+def checkout_cartao_adequacao_saas_service(
+    db,
+    *,
+    usuario,
+    token: str,
+    installments: int,
+    payment_method_id: str,
+    payer_email: str,
+    issuer_id=None,
+    identification_type=None,
+    identification_number=None,
+    base_url=None,
+):
+    bid = obter_barbearia_id(usuario)
+
+    email = (payer_email or "").strip()
+    token = (token or "").strip()
+    pmid = (payment_method_id or "").strip()
+
+    if "@" not in email:
+        raise HTTPException(
+            status_code=400,
+            detail="Informe um e-mail valido.",
+        )
+
+    if not token or not pmid:
+        raise HTTPException(
+            status_code=400,
+            detail="Token e payment_method_id sao obrigatorios.",
+        )
+
+    ctx = _preparar_checkout_adequacao(
+        db,
+        barbearia_id=bid,
+        forma_pagamento="CARTAO",
+    )
+
+    existente = ctx["existente"]
+
+    if existente is not None:
+        return existente
+
+    ass = ctx["assinatura"]
+    plano = ctx["plano"]
+    valor = ctx["valor"]
+    ext = ctx["external_reference"]
+
+    parcelas = int(installments or 1)
+
+    maxp = max(
+        1,
+        min(
+            int(plano.max_parcelas_cartao or 1),
+            12,
+        ),
+    )
+
+    if parcelas < 1 or parcelas > maxp:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Este plano permite cartao em ate {maxp}x."
+            ),
+        )
+
+    tentativa = int(ctx.get("tentativa") or 1)
+
+    idem = (
+        f"BARBSIST-ADEQ-CARTAO-"
+        f"{ctx['adequacao'].id}"
+        f"-T{tentativa}"
+    )
+
+    payload = {
+        "transaction_amount": valor,
+        "token": token,
+        "description": (
+            f"BarbSist - Adequacao para {plano.nome}"
+        ),
+        "installments": parcelas,
+        "payment_method_id": pmid,
+        "payer": {
+            "email": email,
+        },
+        "external_reference": ext,
+        "notification_url": _webhook_url(base_url),
+    }
+
+    if issuer_id is not None:
+        payload["issuer_id"] = issuer_id
+
+    if identification_type and identification_number:
+        payload["payer"]["identification"] = {
+            "type": identification_type,
+            "number": identification_number,
+        }
+
+    resp = _api(
+        "POST",
+        "/v1/payments",
+        payload,
+        {
+            "X-Idempotency-Key": idem,
+        },
+    )
+
+    return _criar_pagamento_base(
+        db=db,
+        ass=ass,
+        plano=plano,
+        tipo="CARTAO",
+        valor=valor,
+        payer_email=email,
+        installments=parcelas,
+        method_id=pmid,
+        resposta=resp,
+        idem=idem,
+        ext=ext,
+        valor_original=valor,
+        valor_credito=0.0,
+        commit=False,
+    )
 
 
 def checkout_pix_saas_service(
@@ -669,6 +1397,12 @@ def checkout_pix_saas_service(
     plano = _obter_plano(
         db,
         dados.plano_id,
+    )
+
+    _validar_plano_compativel_com_barbeiros(
+        db=db,
+        barbearia_id=bid,
+        plano=plano,
     )
 
     email = (
@@ -852,6 +1586,11 @@ def checkout_pix_saas_service(
 def checkout_cartao_saas_service(db, dados, usuario, base_url=None):
     bid = obter_barbearia_id(usuario)
     plano = _obter_plano(db, dados.plano_id)
+    _validar_plano_compativel_com_barbeiros(
+        db=db,
+        barbearia_id=bid,
+        plano=plano,
+    )
     parcelas = int(dados.installments or 1)
     maxp = max(1, min(int(plano.max_parcelas_cartao or 1), 12))
     if parcelas < 1 or parcelas > maxp: raise HTTPException(status_code=400, detail=f"Este plano permite cartão em até {maxp}x.")
@@ -996,6 +1735,22 @@ def _ativar_assinatura_por_pagamento(
     ass.data_proximo_vencimento = fim
     ass.liberado_manual = False
     ass.motivo_bloqueio = None
+
+    # V474_C42B_GRAVAR_CICLO_PAGAMENTO
+    #
+    # O pagamento normal financia exatamente o intervalo
+    # calculado nesta ativacao/renovacao.
+    #
+    # Primeira contratacao:
+    #   base = agora
+    #
+    # Renovacao:
+    #   base = vencimento anterior
+    #
+    # Adequacao de plano nao passa por esta funcao e,
+    # portanto, nao cria nem estende ciclo financeiro.
+    pagamento.ciclo_inicio = base
+    pagamento.ciclo_fim = fim
 
     pagamento.processado = True
     pagamento.processado_em = agora
@@ -1238,11 +1993,46 @@ def processar_webhook_saas_service(
                 ),
             )
 
-    _ativar_assinatura_por_pagamento(
-        db,
-        pag,
-        mp,
-    )
+    # V474_C53_WEBHOOK_ADEQUACAO
+    #
+    # Pagamentos de adequacao nao podem entrar na ativacao/renovacao
+    # normal, pois devem preservar integralmente o ciclo vigente.
+    referencia_pagamento = str(
+        pag.external_reference or ""
+    ).strip()
+
+    if referencia_pagamento.startswith("BARBSIST-ADEQ-"):
+        try:
+            (
+                adequacao_id,
+                _tentativa_adequacao,
+            ) = _parse_external_reference_adequacao(
+                referencia_pagamento
+            )
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Referencia de pagamento de adequacao invalida."
+                ),
+            )
+
+        from services.adequacao_plano_saas_service import (
+            finalizar_adequacao_paga_saas,
+        )
+
+        finalizar_adequacao_paga_saas(
+            db,
+            adequacao_id=adequacao_id,
+            pagamento_id=pag.id,
+        )
+
+    else:
+        _ativar_assinatura_por_pagamento(
+            db,
+            pag,
+            mp,
+        )
 
     db.commit()
 
@@ -1254,7 +2044,36 @@ def processar_webhook_saas_service(
     #
     # A base do beneficio permanece pagamento.valor,
     # isto e, somente dinheiro efetivamente recebido.
-    if round(float(pag.valor or 0), 2) > 0:
+    #
+    # V474_C54B_R1_CLASSIFICADOR_SEGURO
+    def _eh_pagamento_adequacao(
+        external_reference,
+    ):
+        try:
+            return (
+                _parse_external_reference_adequacao(
+                    external_reference
+                )
+                is not None
+            )
+        except (TypeError, ValueError):
+            return False
+
+    # V474_C54B_ADEQUACAO_SEM_BENEFICIO_PARCEIRO
+    #
+    # Pagamento proporcional de adequacao de capacidade
+    # nao representa nova mensalidade/renovacao e, portanto,
+    # nao gera um segundo beneficio de parceiro.
+    eh_pagamento_adequacao = (
+        _eh_pagamento_adequacao(
+            pag.external_reference
+        )
+    )
+
+    if (
+        not eh_pagamento_adequacao
+        and round(float(pag.valor or 0), 2) > 0
+    ):
         processar_beneficio_pagamento_service(
             db=db,
             pagamento_saas_id=pag.id,
@@ -1267,6 +2086,202 @@ def processar_webhook_saas_service(
 
 def listar_assinaturas_admin_service(db):
     return db.query(models.AssinaturaSaaS).order_by(models.AssinaturaSaaS.id.desc()).all()
+
+
+def conceder_teste_saas_service(
+    db,
+    barbearia_id,
+    dados,
+    usuario_logado,
+):
+    """Cria ou atualiza o teste individual de uma barbearia."""
+    barbearia = (
+        db.query(models.Barbearia)
+        .filter(models.Barbearia.id == barbearia_id)
+        .with_for_update()
+        .first()
+    )
+    if not barbearia:
+        raise HTTPException(status_code=404, detail="Barbearia não encontrada.")
+
+    plano = (
+        db.query(models.PlanoSaaS)
+        .filter(
+            models.PlanoSaaS.id == dados.plano_id,
+            models.PlanoSaaS.ativo.is_(True),
+        )
+        .first()
+    )
+    if not plano:
+        raise HTTPException(status_code=404, detail="Plano SaaS ativo não encontrado.")
+
+    observacao = (dados.observacao or "").strip()
+    if len(observacao) < 3:
+        raise HTTPException(status_code=400, detail="Informe a justificativa da concessão.")
+
+    ass = (
+        db.query(models.AssinaturaSaaS)
+        .filter(models.AssinaturaSaaS.barbearia_id == barbearia_id)
+        .with_for_update()
+        .first()
+    )
+    agora = datetime.now()
+    status_anterior = ass.status if ass else None
+
+    assinatura_paga_ativa = bool(
+        ass
+        and (ass.status or "").upper() == "ATIVA"
+        and (ass.status_pagamento or "").upper() == "PAGO"
+    )
+
+    teste_anterior = (
+        db.query(models.AssinaturaSaaSAuditoria.id)
+        .filter(
+            models.AssinaturaSaaSAuditoria.barbearia_id
+            == barbearia_id,
+            models.AssinaturaSaaSAuditoria.acao
+            == "CONCESSAO_TESTE",
+        )
+        .first()
+        is not None
+    )
+
+    if ass and (
+        (ass.status_pagamento or "").upper() == "TESTE_GRATUITO"
+        or (ass.forma_pagamento or "").upper() == "TESTE"
+    ):
+        teste_anterior = True
+
+    frase_exigida = None
+    codigo_bloqueio = None
+    mensagem_bloqueio = None
+
+    if assinatura_paga_ativa:
+        codigo_bloqueio = "ASSINATURA_PAGA_ATIVA"
+        frase_exigida = "SUBSTITUIR ASSINATURA PAGA"
+        mensagem_bloqueio = (
+            "Esta barbearia possui uma assinatura paga ativa. "
+            "A concessão do teste substituirá a vigência e a "
+            "situação financeira atuais."
+        )
+    elif teste_anterior:
+        codigo_bloqueio = "TESTE_JA_CONCEDIDO"
+        frase_exigida = "CONCEDER NOVO TESTE"
+        mensagem_bloqueio = (
+            "Esta barbearia já recebeu um período de teste. "
+            "Uma nova concessão é uma exceção administrativa."
+        )
+
+    confirmacao = (getattr(dados, "confirmacao", None) or "").strip()
+    excecao_autorizada = bool(
+        getattr(dados, "autorizar_excecao", False)
+    )
+
+    if frase_exigida and (
+        not excecao_autorizada
+        or confirmacao != frase_exigida
+    ):
+        detalhe_assinatura = None
+        if ass:
+            detalhe_assinatura = {
+                "id": ass.id,
+                "plano_id": ass.plano_id,
+                "status": ass.status,
+                "status_pagamento": ass.status_pagamento,
+                "forma_pagamento": ass.forma_pagamento,
+                "data_inicio": (
+                    ass.data_inicio.isoformat()
+                    if ass.data_inicio
+                    else None
+                ),
+                "data_fim": (
+                    ass.data_fim.isoformat()
+                    if ass.data_fim
+                    else None
+                ),
+                "data_proximo_vencimento": (
+                    ass.data_proximo_vencimento.isoformat()
+                    if ass.data_proximo_vencimento
+                    else None
+                ),
+            }
+
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "codigo": codigo_bloqueio,
+                "mensagem": mensagem_bloqueio,
+                "confirmacao_exigida": frase_exigida,
+                "assinatura_atual": detalhe_assinatura,
+            },
+        )
+
+    estado_anterior = None
+    if ass:
+        estado_anterior = {
+            "plano_id": ass.plano_id,
+            "status": ass.status,
+            "status_pagamento": ass.status_pagamento,
+            "forma_pagamento": ass.forma_pagamento,
+            "data_inicio": (
+                ass.data_inicio.isoformat()
+                if ass.data_inicio
+                else None
+            ),
+            "data_fim": (
+                ass.data_fim.isoformat()
+                if ass.data_fim
+                else None
+            ),
+            "data_proximo_vencimento": (
+                ass.data_proximo_vencimento.isoformat()
+                if ass.data_proximo_vencimento
+                else None
+            ),
+        }
+    if ass is None:
+        ass = models.AssinaturaSaaS(
+            barbearia_id=barbearia_id,
+            plano_id=plano.id,
+            status="PENDENTE",
+            status_pagamento="PENDENTE",
+        )
+        db.add(ass)
+        db.flush()
+
+    ass.plano_id = plano.id
+    ass.status = "ATIVA"
+    ass.status_pagamento = "TESTE_GRATUITO"
+    ass.forma_pagamento = "TESTE"
+    ass.data_inicio = agora
+    ass.data_fim = agora + timedelta(days=int(dados.dias))
+    ass.data_proximo_vencimento = ass.data_fim
+    ass.liberado_manual = True
+    ass.motivo_bloqueio = None
+
+    tipo_concessao = (
+        "EXCECAO_" + codigo_bloqueio
+        if codigo_bloqueio
+        else "PRIMEIRO_TESTE"
+    )
+    _registrar_auditoria_assinatura_saas(
+        db,
+        ass,
+        usuario_logado,
+        "CONCESSAO_TESTE",
+        (
+            f"{observacao} | tipo={tipo_concessao} "
+            f"| estado_anterior={estado_anterior} "
+            f"| plano_novo_id={plano.id} "
+            f"| dias={int(dados.dias)} "
+            f"| inicio={ass.data_inicio.isoformat()} "
+            f"| fim={ass.data_fim.isoformat()}"
+        ),
+        status_anterior,
+    )
+    db.commit()
+    db.refresh(ass)
+    return ass
 
 
 def listar_pagamentos_admin_service(db):
@@ -1332,9 +2347,7 @@ def liberar_assinatura_manual_service(
 
     from datetime import timedelta
 
-    ass.data_fim = agora + timedelta(
-        days=max(1, int(dados.dias or 30))
-    )
+    ass.data_fim = agora + timedelta(days=int(dados.dias))
     ass.data_proximo_vencimento = ass.data_fim
     ass.liberado_manual = True
     ass.motivo_bloqueio = None

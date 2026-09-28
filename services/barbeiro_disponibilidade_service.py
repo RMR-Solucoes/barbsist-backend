@@ -1,6 +1,8 @@
 from sqlalchemy.orm import Session
 
 import models
+from fastapi import HTTPException
+from services.adequacao_plano_saas_service import validar_barbeiro_liberado_por_plano
 
 from auth.tenant import (
     buscar_da_barbearia,
@@ -161,6 +163,13 @@ def atualizar_disponibilidade(
         usuario=usuario_logado,
         mensagem_nao_encontrado="Disponibilidade não encontrada.",
     )
+
+    try:
+        validar_barbeiro_liberado_por_plano(
+            db, obter_barbearia_id(usuario_logado), disponibilidade.barbeiro_id
+        )
+    except ValueError as erro:
+        raise HTTPException(status_code=403, detail=str(erro))
 
     novo_usa_padrao = dados.usa_padrao if dados.usa_padrao is not None else disponibilidade.usa_padrao
     novo_trabalha = dados.trabalha if dados.trabalha is not None else disponibilidade.trabalha

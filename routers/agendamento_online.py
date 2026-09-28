@@ -11,6 +11,10 @@ from database import get_db
 import models
 from schemas import AgendamentoCreate, AgendamentoResponse
 from services.agendamento_service import criar_agendamento_service
+from services.adequacao_plano_saas_service import (
+    barbeiro_bloqueado_por_plano,
+    validar_barbeiro_liberado_por_plano,
+)
 from services.barbeiro_disponibilidade_service import (
     buscar_disponibilidade_publica,
 )
@@ -98,7 +102,7 @@ def listar_barbeiros_online(
     db: Session = Depends(get_db),
 ):
     barbearia = obter_barbearia_publica(db, barbearia_slug)
-    return (
+    barbeiros = (
         db.query(models.Barbeiro)
         .filter(
             models.Barbeiro.barbearia_id == barbearia.id,
@@ -107,6 +111,23 @@ def listar_barbeiros_online(
         .order_by(models.Barbeiro.nome.asc())
         .all()
     )
+    barbeiros_liberados = [
+        barbeiro
+        for barbeiro in barbeiros
+        if not barbeiro_bloqueado_por_plano(
+            db,
+            barbearia.id,
+            barbeiro.id,
+        )
+    ]
+
+    return [
+        {
+            "id": barbeiro.id,
+            "nome": barbeiro.nome,
+        }
+        for barbeiro in barbeiros_liberados
+    ]
 
 
 @router.get("/{barbearia_slug}/servicos")
@@ -142,6 +163,10 @@ def validar_barbeiro_publico(
     )
     if not barbeiro:
         raise HTTPException(status_code=404, detail="Barbeiro não encontrado.")
+    try:
+        validar_barbeiro_liberado_por_plano(db, barbearia_id, barbeiro_id)
+    except ValueError as erro:
+        raise HTTPException(status_code=403, detail=str(erro))
     return barbeiro
 
 
@@ -186,6 +211,8 @@ def horarios_disponiveis_dia(
 
     horarios_livres = []
     for barbeiro in barbeiros:
+        if barbeiro_bloqueado_por_plano(db, barbearia.id, barbeiro.id):
+            continue
         horarios_livres.extend(
             gerar_horarios_livres_para_barbeiro(
                 db=db,

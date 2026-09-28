@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 import models
 
 from auth.tenant import obter_barbearia_id
+from services.adequacao_plano_saas_service import reconciliar_adequacao_plano_saas
 
 from services.crud_service import (
     criar_registro_com_codigo,
@@ -16,6 +17,13 @@ from services.crud_service import (
     reativar_registro,
 )
 
+
+def validar_limite_barbeiros_saas(
+    db: Session,
+    usuario_logado: models.Usuario,
+):
+    """Compatibilidade V4.7.2A: cadastro nao e mais bloqueado por capacidade."""
+    return
 
 def normalizar_texto(
     valor: str | None,
@@ -155,6 +163,12 @@ def validar_tipo(
         "FUNCIONARIO",
         "AUTONOMO",
         "PROPRIETARIO",
+        "PARCEIRO",
+        "COMISSIONADO",
+        "ALUGUEL DE CADEIRA",
+        "DIARISTA",
+        "ALUNO",
+        "TESTE",
     }
 
     if tipo_normalizado not in tipos_validos:
@@ -169,6 +183,34 @@ def validar_tipo(
 
     return tipo_normalizado
 
+
+def validar_dados_financeiros_vinculo(tipo, percentual, aluguel, periodicidade, vencimento, diaria):
+    percentual = validar_percentual(percentual)
+    if tipo == "ALUGUEL DE CADEIRA":
+        try: aluguel = float(aluguel)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Informe um valor de aluguel valido.")
+        if aluguel <= 0:
+            raise HTTPException(status_code=400, detail="O valor do aluguel deve ser maior que zero.")
+        periodicidade = normalizar_texto(periodicidade)
+        if periodicidade not in {"SEMANAL", "QUINZENAL", "MENSAL"}:
+            raise HTTPException(status_code=400, detail="Periodicidade invalida.")
+        venc = None
+        if periodicidade == "MENSAL":
+            try: venc = int(vencimento)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="Informe vencimento entre 1 e 31.")
+            if not 1 <= venc <= 31:
+                raise HTTPException(status_code=400, detail="Informe vencimento entre 1 e 31.")
+        return percentual, aluguel, periodicidade, venc, None
+    if tipo == "DIARISTA":
+        try: diaria = float(diaria)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Informe um valor de diaria valido.")
+        if diaria <= 0:
+            raise HTTPException(status_code=400, detail="O valor da diaria deve ser maior que zero.")
+        return percentual, None, None, None, diaria
+    return percentual, None, None, None, None
 
 def validar_duplicidade_barbeiro(
     db: Session,
@@ -261,8 +303,10 @@ def criar_barbeiro_service(
         dados.tipo
     )
 
-    percentual_comissao = validar_percentual(
-        dados.percentual_comissao
+    (percentual_comissao, valor_aluguel_cadeira, periodicidade_aluguel,
+     dia_vencimento_aluguel, valor_diaria) = validar_dados_financeiros_vinculo(
+        tipo, dados.percentual_comissao, dados.valor_aluguel_cadeira,
+        dados.periodicidade_aluguel, dados.dia_vencimento_aluguel, dados.valor_diaria
     )
 
     especialidades = normalizar_texto(
@@ -281,7 +325,7 @@ def criar_barbeiro_service(
         email=email
     )
 
-    return criar_registro_com_codigo(
+    barbeiro = criar_registro_com_codigo(
         db=db,
         model=models.Barbeiro,
         tipo_sequencia="BARBEIRO",
@@ -292,11 +336,22 @@ def criar_barbeiro_service(
             "email": email,
             "tipo": tipo,
             "percentual_comissao": percentual_comissao,
+            "valor_aluguel_cadeira": valor_aluguel_cadeira,
+            "periodicidade_aluguel": periodicidade_aluguel,
+            "dia_vencimento_aluguel": dia_vencimento_aluguel,
+            "valor_diaria": valor_diaria,
             "especialidades": especialidades,
             "observacoes": observacoes,
             "ativo": True,
         }
     )
+
+    reconciliar_adequacao_plano_saas(
+        db=db,
+        barbearia_id=barbeiro.barbearia_id,
+        barbeiro_evento_id=barbeiro.id,
+    )
+    return barbeiro
 
 
 def listar_barbeiros_service(
@@ -374,8 +429,10 @@ def atualizar_barbeiro_service(
         dados.tipo
     )
 
-    percentual_comissao = validar_percentual(
-        dados.percentual_comissao
+    (percentual_comissao, valor_aluguel_cadeira, periodicidade_aluguel,
+     dia_vencimento_aluguel, valor_diaria) = validar_dados_financeiros_vinculo(
+        tipo, dados.percentual_comissao, dados.valor_aluguel_cadeira,
+        dados.periodicidade_aluguel, dados.dia_vencimento_aluguel, dados.valor_diaria
     )
 
     especialidades = normalizar_texto(
@@ -402,6 +459,10 @@ def atualizar_barbeiro_service(
     barbeiro.percentual_comissao = (
         percentual_comissao
     )
+    barbeiro.valor_aluguel_cadeira = valor_aluguel_cadeira
+    barbeiro.periodicidade_aluguel = periodicidade_aluguel
+    barbeiro.dia_vencimento_aluguel = dia_vencimento_aluguel
+    barbeiro.valor_diaria = valor_diaria
     barbeiro.especialidades = especialidades
     barbeiro.observacoes = observacoes
 
@@ -467,10 +528,16 @@ def inativar_barbeiro_service(
         db=db
     )
 
-    return inativar_registro(
+    barbeiro = inativar_registro(
         db=db,
         registro=barbeiro
     )
+
+    reconciliar_adequacao_plano_saas(
+        db=db,
+        barbearia_id=barbeiro.barbearia_id,
+    )
+    return barbeiro
 
 
 def reativar_barbeiro_service(
@@ -499,7 +566,67 @@ def reativar_barbeiro_service(
         barbeiro_id_ignorado=barbeiro.id
     )
 
-    return reativar_registro(
+    barbeiro = reativar_registro(
         db=db,
         registro=barbeiro
     )
+
+
+
+    reconciliar_adequacao_plano_saas(
+        db=db,
+        barbearia_id=barbeiro.barbearia_id,
+        barbeiro_evento_id=barbeiro.id,
+    )
+    return barbeiro
+
+
+def excluir_barbeiro_definitivamente_service(
+    barbeiro_id: int,
+    db: Session,
+    usuario_logado: models.Usuario
+):
+    barbeiro = buscar_barbeiro_service(
+        barbeiro_id=barbeiro_id, db=db,
+        usuario_logado=usuario_logado, exigir_ativo=False
+    )
+
+    referencias = []
+    for tabela in models.Base.metadata.sorted_tables:
+        if tabela.name == models.Barbeiro.__table__.name:
+            continue
+        for coluna in tabela.columns:
+            aponta = any(
+                fk.column.table.name == models.Barbeiro.__table__.name
+                and fk.column.name == "id"
+                for fk in coluna.foreign_keys
+            )
+            if aponta and db.query(tabela).filter(coluna == barbeiro.id).first() is not None:
+                referencias.append(tabela.name)
+                break
+
+    if referencias:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Este barbeiro possui historico vinculado e nao pode ser "
+                "excluido definitivamente. Utilize Inativar para preservar "
+                "os registros. Vinculos encontrados: "
+                + ", ".join(sorted(set(referencias))) + "."
+            )
+        )
+
+    barbearia_id = barbeiro.barbearia_id
+    try:
+        db.delete(barbeiro)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Nao foi possivel excluir este barbeiro porque existem registros vinculados. Utilize Inativar."
+        )
+
+    reconciliar_adequacao_plano_saas(db=db, barbearia_id=barbearia_id)
+    return {"mensagem": "Barbeiro excluido definitivamente.", "barbeiro_id": barbeiro_id}
+

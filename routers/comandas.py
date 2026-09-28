@@ -10,6 +10,7 @@ from sqlalchemy.orm import (
 )
 
 import models
+from services.adequacao_plano_saas_service import validar_barbeiro_liberado_por_plano
 
 from database import get_db
 
@@ -149,6 +150,11 @@ def abrir_comanda(
                     "Barbeiro nao encontrado ou inativo."
                 )
             )
+
+        try:
+            validar_barbeiro_liberado_por_plano(db, barbearia_id, barbeiro.id)
+        except ValueError as erro:
+            raise HTTPException(status_code=403, detail=str(erro))
 
         barbeiro_id = barbeiro.id
 

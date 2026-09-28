@@ -152,6 +152,10 @@ class BarbeiroBase(BaseModel):
     email: Optional[str] = None
     tipo: Optional[str] = "associado"
     percentual_comissao: Optional[float] = 50.0
+    valor_aluguel_cadeira: Optional[float] = None
+    periodicidade_aluguel: Optional[str] = None
+    dia_vencimento_aluguel: Optional[int] = None
+    valor_diaria: Optional[float] = None
     especialidades: Optional[str] = None
     observacoes: Optional[str] = None
 
@@ -1056,6 +1060,19 @@ class AssinaturaSaaSResponse(BaseModel):
         from_attributes = True
 
 
+class AdequacaoPlanoSaaSResponse(BaseModel):
+    id: int
+    status: str
+    plano_origem_id: int
+    plano_origem_nome: Optional[str] = None
+    plano_destino_id: Optional[int] = None
+    plano_destino_nome: Optional[str] = None
+    quantidade_barbeiros: int
+    limite_origem: int
+    criado_em: datetime
+    prazo_regularizacao: datetime
+
+
 class CheckoutSaaSPixRequest(BaseModel):
     plano_id: int
     payer_email: str
@@ -1098,8 +1115,16 @@ class PagamentoSaaSResponse(BaseModel):
 
 
 class LiberarAssinaturaSaaSRequest(BaseModel):
-    dias: int = 30
+    dias: int = Field(default=40, ge=1, le=365)
     observacao: Optional[str] = None
+
+
+class ConcederTesteSaaSRequest(BaseModel):
+    plano_id: int = Field(gt=0)
+    dias: int = Field(default=40, ge=1, le=365)
+    observacao: str = Field(min_length=3, max_length=500)
+    autorizar_excecao: bool = False
+    confirmacao: Optional[str] = Field(default=None, max_length=80)
 
 
 class BloquearAssinaturaSaaSRequest(BaseModel):
