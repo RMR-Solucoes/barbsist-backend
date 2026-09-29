@@ -349,20 +349,11 @@ def _valor_checkout_saas_com_db(
     plano,
     forma_pagamento,
 ):
+    """
+    Retorna exclusivamente o preço oficial cadastrado no PlanoSaaS.
+    O Programa Fundadores foi descontinuado.
+    """
     forma = (forma_pagamento or "").strip().lower()
-
-    if _elegivel_preco_fundador(
-        db,
-        assinatura,
-        plano,
-    ):
-        precos = _precos_fundador_para_plano(plano)
-
-        if forma == "pix":
-            return round(float(precos["pix"]), 2)
-
-        if forma in {"cartao", "cartão"}:
-            return round(float(precos["cartao"]), 2)
 
     if forma == "pix":
         return round(float(plano.valor_pix), 2)
@@ -372,9 +363,8 @@ def _valor_checkout_saas_com_db(
 
     raise HTTPException(
         status_code=400,
-        detail="Forma de pagamento SaaS inválida."
+        detail="Forma de pagamento SaaS inválida.",
     )
-
 
 def _garantir_promocao_fundador(db, assinatura, plano):
     """
@@ -416,23 +406,10 @@ def _garantir_promocao_fundador(db, assinatura, plano):
 
 def _valor_checkout_saas(assinatura, plano, forma_pagamento):
     """
-    Define o valor que deverá ser enviado ao Mercado Pago.
-
-    Enquanto a condição Fundador estiver vigente, utiliza
-    o preço promocional. Após o prazo, volta automaticamente
-    ao preço normal cadastrado no PlanoSaaS.
+    Retorna exclusivamente o preço oficial cadastrado no PlanoSaaS.
+    Mantido apenas por compatibilidade com código legado.
     """
     forma = (forma_pagamento or "").strip().lower()
-
-    if _promocao_fundador_ativa(assinatura):
-        precos = _precos_fundador_para_plano(plano)
-
-        if precos:
-            if forma == "pix":
-                return round(float(precos["pix"]), 2)
-
-            if forma in {"cartao", "cartão"}:
-                return round(float(precos["cartao"]), 2)
 
     if forma == "pix":
         return round(float(plano.valor_pix), 2)
@@ -442,9 +419,8 @@ def _valor_checkout_saas(assinatura, plano, forma_pagamento):
 
     raise HTTPException(
         status_code=400,
-        detail="Forma de pagamento SaaS inválida."
+        detail="Forma de pagamento SaaS inválida.",
     )
-
 
 def listar_planos_saas_service(db, incluir_inativos=False):
     q = db.query(models.PlanoSaaS)
@@ -1658,58 +1634,9 @@ def _ativar_assinatura_por_pagamento(
 
     agora = datetime.now()
 
-    # Consolida a condição Fundador somente após pagamento aprovado.
-    # Gerar checkout promocional não consome vaga.
-    if ass.fundador_posicao is None:
-        precos_fundador = _precos_fundador_para_plano(plano)
-
-        if precos_fundador:
-            tipo_pagamento = (
-                pagamento.tipo_pagamento or ""
-            ).strip().lower()
-
-            valor_promocional = None
-
-            if tipo_pagamento == "pix":
-                valor_promocional = round(
-                    float(precos_fundador["pix"]),
-                    2,
-                )
-
-            elif tipo_pagamento in {"cartao", "cartão"}:
-                valor_promocional = round(
-                    float(precos_fundador["cartao"]),
-                    2,
-                )
-
-            # O preco comercial precisa ser considerado antes
-            # do abatimento de creditos BarbSist.
-            # Ex.: mensalidade Fundador R$ 19,90 integralmente
-            # quitada por credito possui pagamento.valor == 0,
-            # mas valor_original == 19,90.
-            valor_pago = round(
-                float(
-                    pagamento.valor_original
-                    if (
-                        float(pagamento.valor_credito or 0) > 0
-                        and pagamento.valor_original is not None
-                    )
-                    else pagamento.valor
-                    or 0
-                ),
-                2,
-            )
-
-            if (
-                valor_promocional is not None
-                and valor_pago == valor_promocional
-                and _tem_vaga_fundador(db)
-            ):
-                _garantir_promocao_fundador(
-                    db=db,
-                    assinatura=ass,
-                    plano=plano,
-                )
+    # Programa Fundadores descontinuado.
+    # Pagamentos aprovados não criam nem renovam benefício Fundadores.
+    # Campos históricos permanecem apenas para compatibilidade.
 
     # Se a assinatura está vigente, a renovação/upgrade entra após
     # o período já pago; caso contrário começa imediatamente.
