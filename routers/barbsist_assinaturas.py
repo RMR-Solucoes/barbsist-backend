@@ -8,6 +8,7 @@ from schemas import (
     AdequacaoPlanoSaaSResponse,
     AssinaturaSaaSResponse,
     CheckoutSaaSCartaoRequest,
+    CheckoutSaaSMercadoPagoRequest,
     CheckoutSaaSPixRequest,
     PagamentoSaaSResponse,
     PlanoSaaSResponse,
@@ -16,6 +17,7 @@ from services.adequacao_plano_saas_service import obter_adequacao_pendente_saas
 from services.adequacao_financeira_saas_service import previa_financeira_adequacao_saas
 from services.assinatura_saas_service import (
     checkout_cartao_saas_service,
+    checkout_mercado_pago_saas_service,
     checkout_pix_saas_service,
     listar_planos_saas_service,
     minha_assinatura_saas_service,
@@ -74,6 +76,11 @@ def checkout_pix(dados: CheckoutSaaSPixRequest, request: Request, db: Session = 
 @router.post("/checkout/cartao", response_model=PagamentoSaaSResponse)
 def checkout_cartao(dados: CheckoutSaaSCartaoRequest, request: Request, db: Session = Depends(get_db), usuario_logado=Depends(admin)):
     return checkout_cartao_saas_service(db, dados, usuario_logado, str(request.base_url).rstrip("/"))
+
+
+@router.post("/checkout/mercado-pago", response_model=PagamentoSaaSResponse)
+def checkout_mercado_pago(dados: CheckoutSaaSMercadoPagoRequest, request: Request, db: Session = Depends(get_db), usuario_logado=Depends(admin)):
+    return checkout_mercado_pago_saas_service(db, dados, usuario_logado, str(request.base_url).rstrip("/"))
 
 
 @router.post("/webhook")

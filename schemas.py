@@ -1078,6 +1078,11 @@ class CheckoutSaaSPixRequest(BaseModel):
     payer_email: str
 
 
+class CheckoutSaaSMercadoPagoRequest(BaseModel):
+    plano_id: int
+    payer_email: str
+
+
 class CheckoutSaaSCartaoRequest(BaseModel):
     plano_id: int
     token: str

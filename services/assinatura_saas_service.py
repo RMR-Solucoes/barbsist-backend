@@ -1559,6 +1559,107 @@ def checkout_pix_saas_service(
     )
 
 
+
+def checkout_mercado_pago_saas_service(db, dados, usuario, base_url=None):
+    """Cria Checkout Pro para pagamento no ambiente do Mercado Pago.
+
+    Mantem o fluxo SaaS atual baseado em pagamentos: a preference usa
+    external_reference e notification_url da assinatura; quando o pagamento
+    for criado/aprovado, o webhook existente consulta /v1/payments/{id} e
+    reconcilia pelo external_reference.
+    """
+    bid = obter_barbearia_id(usuario)
+    plano = _obter_plano(db, dados.plano_id)
+
+    _validar_plano_compativel_com_barbeiros(
+        db=db,
+        barbearia_id=bid,
+        plano=plano,
+    )
+
+    email = (dados.payer_email or "").strip()
+    if "@" not in email:
+        raise HTTPException(status_code=400, detail="Informe um e-mail valido.")
+
+    ass = _obter_ou_criar_assinatura(db, bid, plano)
+    valor = _valor_checkout_saas_com_db(
+        db,
+        ass,
+        plano,
+        "cartao",
+    )
+
+    maxp = max(1, min(int(plano.max_parcelas_cartao or 1), 12))
+    idem = str(uuid.uuid4())
+    ext = f"BARBSIST-SAAS-MP-B{bid}-A{ass.id}-{uuid.uuid4().hex[:12]}"
+
+    payload = {
+        "items": [
+            {
+                "id": f"barbsist-plano-{plano.id}",
+                "title": f"BarbSist - {plano.nome}",
+                "quantity": 1,
+                "currency_id": "BRL",
+                "unit_price": valor,
+            }
+        ],
+        "payer": {"email": email},
+        "external_reference": ext,
+        "notification_url": _webhook_url(base_url),
+        "payment_methods": {
+            "installments": maxp,
+            # Boleto sera homologado em etapa propria.
+            "excluded_payment_types": [{"id": "ticket"}],
+        },
+    }
+
+    resp = _api(
+        "POST",
+        "/checkout/preferences",
+        payload,
+        {"X-Idempotency-Key": idem},
+    )
+
+    init_point = (resp.get("init_point") or "").strip()
+    preference_id = str(resp.get("id") or "").strip()
+
+    if not init_point:
+        raise HTTPException(
+            status_code=502,
+            detail="Mercado Pago nao retornou a URL do Checkout Pro.",
+        )
+
+    resposta_local = {
+        "id": None,
+        "status": "pending",
+        "status_detail": (
+            f"checkout_pro_preference:{preference_id}"
+            if preference_id
+            else "checkout_pro_preference"
+        ),
+        "payment_method_id": "mercado_pago",
+        "payment_type_id": "checkout_pro",
+        "point_of_interaction": {
+            "transaction_data": {
+                "ticket_url": init_point,
+            }
+        },
+    }
+
+    return _criar_pagamento_base(
+        db=db,
+        ass=ass,
+        plano=plano,
+        tipo="MERCADO_PAGO",
+        valor=valor,
+        payer_email=email,
+        installments=1,
+        method_id="mercado_pago",
+        resposta=resposta_local,
+        idem=idem,
+        ext=ext,
+    )
+
 def checkout_cartao_saas_service(db, dados, usuario, base_url=None):
     bid = obter_barbearia_id(usuario)
     plano = _obter_plano(db, dados.plano_id)
