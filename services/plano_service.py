@@ -74,8 +74,8 @@ def _validar_dia_vencimento(dia):
         dia = int(dia)
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Informe o dia de vencimento.")
-    if dia < 1 or dia > 28:
-        raise HTTPException(status_code=400, detail="O dia de vencimento deve estar entre 1 e 28.")
+    if dia < 1 or dia > 30:
+        raise HTTPException(status_code=400, detail="O dia de vencimento deve estar entre 1 e 30.")
     return dia
 
 
@@ -84,25 +84,59 @@ def _somar_mes(ano, mes, quantidade=1):
     return indice // 12, indice % 12 + 1
 
 
+def _dia_efetivo_vencimento(ano, mes, dia_preferido):
+    # Converte o dia preferido (1..30) no dia existente naquele mês.
+    dia = _validar_dia_vencimento(dia_preferido)
+    ultimo_dia = calendar.monthrange(ano, mes)[1]
+    return min(dia, ultimo_dia)
+
+
+def _data_vencimento_fixa(ano, mes, dia_preferido):
+    # Mantém a preferência original e usa o último dia apenas no mês curto.
+    dia_efetivo = _dia_efetivo_vencimento(ano, mes, dia_preferido)
+    return datetime(ano, mes, dia_efetivo, 23, 59, 59)
+
+
 def calcular_primeiro_ciclo_proporcional(agora, dia_vencimento, plano):
-    """Congela vencimento, fator, valor e usos do primeiro ciclo."""
+    # Congela vencimento, fator, valor e usos do primeiro ciclo.
     dia = _validar_dia_vencimento(dia_vencimento)
-    if agora.day < dia:
+
+    # Preserva a semântica anterior: no próprio dia de vencimento,
+    # o primeiro vencimento passa para o mês seguinte.
+    dia_efetivo_mes_atual = _dia_efetivo_vencimento(
+        agora.year, agora.month, dia
+    )
+    if agora.day < dia_efetivo_mes_atual:
         ano_vencimento, mes_vencimento = agora.year, agora.month
     else:
-        ano_vencimento, mes_vencimento = _somar_mes(agora.year, agora.month)
+        ano_vencimento, mes_vencimento = _somar_mes(
+            agora.year, agora.month
+        )
 
-    vencimento = datetime(
-        ano_vencimento, mes_vencimento, dia, 23, 59, 59
+    vencimento = _data_vencimento_fixa(
+        ano_vencimento, mes_vencimento, dia
     )
-    ano_anterior, mes_anterior = _somar_mes(ano_vencimento, mes_vencimento, -1)
-    inicio_ciclo = datetime(ano_anterior, mes_anterior, dia, 23, 59, 59)
-    dias_ciclo = max(1, (vencimento.date() - inicio_ciclo.date()).days)
-    dias_utilizados = max(1, (vencimento.date() - agora.date()).days)
+    ano_anterior, mes_anterior = _somar_mes(
+        ano_vencimento, mes_vencimento, -1
+    )
+    inicio_ciclo = _data_vencimento_fixa(
+        ano_anterior, mes_anterior, dia
+    )
+
+    dias_ciclo = max(
+        1, (vencimento.date() - inicio_ciclo.date()).days
+    )
+    dias_utilizados = max(
+        1, (vencimento.date() - agora.date()).days
+    )
     fator = min(1.0, dias_utilizados / dias_ciclo)
     valor = max(0.01, round(float(plano.valor or 0) * fator, 2))
     quantidade = max(0, int(plano.quantidade_servicos or 0))
-    usos = max(1, math.ceil(quantidade * fator)) if quantidade else 0
+    usos = (
+        max(1, math.ceil(quantidade * fator))
+        if quantidade
+        else 0
+    )
     return vencimento, fator, valor, usos
 
 
@@ -125,7 +159,7 @@ def referencia_cobranca_assinatura(assinatura, momento=None):
 def _proximo_vencimento_fixo(agora, dia):
     dia = _validar_dia_vencimento(dia)
     ano, mes = _somar_mes(agora.year, agora.month)
-    return datetime(ano, mes, dia, 23, 59, 59)
+    return _data_vencimento_fixa(ano, mes, dia)
 
 
 def validar_servicos_plano(

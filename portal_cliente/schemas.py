@@ -81,7 +81,7 @@ class PortalPlanoDisponivelResponse(PortalPlanoResumo):
 
 
 class PortalAssinarPixRequest(BaseModel):
-    dia_vencimento: int = Field(ge=1, le=28)
+    dia_vencimento: int = Field(ge=1, le=30)
 
 
 class PortalComandaPixRequest(BaseModel):

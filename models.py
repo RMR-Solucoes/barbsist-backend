@@ -1313,7 +1313,7 @@ class AssinaturaCliente(BarbeariaMixin, Base):
         nullable=True
     )
 
-    # Dia fixo escolhido para as cobranças recorrentes (1 a 28).
+    # Dia fixo escolhido para as cobranças recorrentes (1 a 30).
     dia_vencimento = Column(Integer, nullable=True)
 
     # Dados congelados do primeiro ciclo proporcional.

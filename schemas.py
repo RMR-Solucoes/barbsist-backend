@@ -646,7 +646,7 @@ class PlanoUpdate(BaseModel):
 class AssinaturaClienteCreate(BaseModel):
     cliente_id: int
     plano_id: int
-    dia_vencimento: int = Field(ge=1, le=28)
+    dia_vencimento: int = Field(ge=1, le=30)
 
 
 class AssinaturaClienteResponse(BaseModel):
@@ -690,7 +690,7 @@ class AssinaturaClienteUpdate(BaseModel):
     valor_mensal: float | None = None
     status: str | None = None
     status_pagamento: str | None = None 
-    dia_vencimento: int | None = Field(default=None, ge=1, le=28)
+    dia_vencimento: int | None = Field(default=None, ge=1, le=30)
 
 class TrocarPlanoAssinaturaRequest(BaseModel):
     plano_id: int
