@@ -62,6 +62,26 @@ def obter_barbearia_publica(
     return barbearia
 
 
+def agendamento_online_habilitado(
+    db: Session,
+    barbearia_id: int,
+) -> bool:
+    from portal_cliente.models import PortalClienteConfiguracao
+
+    config = (
+        db.query(PortalClienteConfiguracao)
+        .filter(
+            PortalClienteConfiguracao.barbearia_id == barbearia_id,
+        )
+        .first()
+    )
+
+    return bool(
+        config
+        and config.permitir_agendamento_portal
+    )
+
+
 def criar_contexto_publico(barbearia_id: int):
     return SimpleNamespace(
         perfil="publico",
@@ -93,6 +113,7 @@ def consultar_barbearia_publica(
         "cor_secundaria": barbearia.cor_secundaria,
         "cor_fundo": barbearia.cor_fundo,
         "cor_destaque": barbearia.cor_destaque,
+        "permitir_agendamento_portal": agendamento_online_habilitado(db, barbearia.id),
     }
 
 
@@ -269,6 +290,12 @@ def criar_agendamento_online(
     db: Session = Depends(get_db),
 ):
     barbearia = obter_barbearia_publica(db, barbearia_slug)
+
+    if not agendamento_online_habilitado(db, barbearia.id):
+        raise HTTPException(
+            status_code=403,
+            detail="Agendamento online não está disponível nesta barbearia.",
+        )
     validar_barbeiro_publico(db, barbearia.id, dados.barbeiro_id)
     validar_servico_publico(db, barbearia.id, dados.servico_id)
 
