@@ -41,11 +41,12 @@ router = APIRouter(
     "",
     response_model=ClienteResponse
 )
+# CADASTRO_CLIENTE_BARBEIRO_M1
 def criar_cliente(
     dados: ClienteCreate,
     db: Session = Depends(get_db),
     usuario_logado=Depends(
-        admin_gerente_ou_recepcao
+        admin_gerente_recepcao_ou_barbeiro
     )
 ):
     """
