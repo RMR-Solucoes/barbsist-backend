@@ -567,7 +567,9 @@ class EstiloResponse(EstiloBase):
 class AgendamentoBase(BaseModel):
     cliente_id: Optional[int] = None
     barbeiro_id: int
-    servico_id: int
+    # BARBSIST_MULTI_SERVICE_M2_SCHEMA
+    servico_id: Optional[int] = None
+    servicos_ids: list[int] = Field(default_factory=list)
 
     estilo_corte_id: Optional[int] = None
     estilo_barba_id: Optional[int] = None

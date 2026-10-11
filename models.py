@@ -1929,3 +1929,109 @@ class FinanceiroPlataformaMovimentacao(Base):
     )
 
     usuario = relationship("Usuario")
+
+# ============================================================================
+# BARBSIST_MULTI_SERVICE_M1_START
+# Estrutura aditiva para varios servicos por agendamento.
+# O campo legado Agendamento.servico_id permanece ativo nesta fase.
+# ============================================================================
+from sqlalchemy import (
+    Column as _BarbSistMultiColumn,
+    ForeignKey as _BarbSistMultiForeignKey,
+    Index as _BarbSistMultiIndex,
+    Integer as _BarbSistMultiInteger,
+    Numeric as _BarbSistMultiNumeric,
+    UniqueConstraint as _BarbSistMultiUniqueConstraint,
+)
+from sqlalchemy.orm import relationship as _BarbSistMultiRelationship
+
+
+class AgendamentoServico(Base):
+    __tablename__ = "agendamento_servicos"
+
+    __table_args__ = (
+        _BarbSistMultiUniqueConstraint(
+            "agendamento_id",
+            "servico_id",
+            name="uq_agendamento_servico",
+        ),
+        _BarbSistMultiIndex(
+            "ix_agendamento_servicos_agendamento_id",
+            "agendamento_id",
+        ),
+        _BarbSistMultiIndex(
+            "ix_agendamento_servicos_servico_id",
+            "servico_id",
+        ),
+    )
+
+    id = _BarbSistMultiColumn(
+        _BarbSistMultiInteger,
+        primary_key=True,
+    )
+
+    agendamento_id = _BarbSistMultiColumn(
+        _BarbSistMultiInteger,
+        _BarbSistMultiForeignKey(
+            "agendamentos.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+
+    servico_id = _BarbSistMultiColumn(
+        _BarbSistMultiInteger,
+        _BarbSistMultiForeignKey("servicos.id"),
+        nullable=False,
+    )
+
+    ordem = _BarbSistMultiColumn(
+        _BarbSistMultiInteger,
+        nullable=False,
+        default=1,
+    )
+
+    preco_snapshot = _BarbSistMultiColumn(
+        _BarbSistMultiNumeric(10, 2),
+        nullable=False,
+        default=0,
+    )
+
+    duracao_minutos_snapshot = _BarbSistMultiColumn(
+        _BarbSistMultiInteger,
+        nullable=False,
+        default=30,
+    )
+
+    agendamento = _BarbSistMultiRelationship(
+        "Agendamento",
+        back_populates="servicos_vinculos",
+    )
+
+    servico = _BarbSistMultiRelationship("Servico")
+
+
+Agendamento.servicos_vinculos = _BarbSistMultiRelationship(
+    "AgendamentoServico",
+    back_populates="agendamento",
+    cascade="all, delete-orphan",
+    order_by="AgendamentoServico.ordem",
+)
+
+
+def _barbsist_agendamento_servicos_ids(self):
+    vinculos = list(getattr(self, "servicos_vinculos", None) or [])
+    if vinculos:
+        return [vinculo.servico_id for vinculo in vinculos]
+
+    legado = getattr(self, "servico_id", None)
+    return [legado] if legado is not None else []
+
+
+if not hasattr(Agendamento, "servicos_ids"):
+    Agendamento.servicos_ids = property(
+        _barbsist_agendamento_servicos_ids
+    )
+
+# BARBSIST_MULTI_SERVICE_M1_END
+# ============================================================================

@@ -192,6 +192,137 @@ def verificar_conflito_horario(
         )
 
 
+
+# BARBSIST_MULTI_SERVICE_M2_HELPERS
+def _normalizar_servicos_ids_agendamento(dados):
+    ids_informados = list(getattr(dados, "servicos_ids", None) or [])
+    legado = getattr(dados, "servico_id", None)
+
+    if not ids_informados and legado is not None:
+        ids_informados = [legado]
+
+    resultado = []
+    vistos = set()
+
+    for valor in ids_informados:
+        try:
+            servico_id = int(valor)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="Identificador de servico invalido.",
+            )
+
+        if servico_id <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Identificador de servico invalido.",
+            )
+
+        if servico_id not in vistos:
+            vistos.add(servico_id)
+            resultado.append(servico_id)
+
+    if not resultado:
+        raise HTTPException(
+            status_code=400,
+            detail="Selecione pelo menos um servico.",
+        )
+
+    return resultado
+
+
+def _validar_servicos_agendamento(
+    db,
+    servicos_ids,
+    usuario_logado,
+):
+    return [
+        validar_servico(
+            db,
+            servico_id,
+            usuario_logado,
+        )
+        for servico_id in servicos_ids
+    ]
+
+
+def _carregar_servicos_agendamento(
+    db,
+    agendamento,
+    usuario_logado,
+):
+    vinculos = (
+        db.query(models.AgendamentoServico)
+        .filter(
+            models.AgendamentoServico.agendamento_id
+            == agendamento.id
+        )
+        .order_by(
+            models.AgendamentoServico.ordem.asc(),
+            models.AgendamentoServico.id.asc(),
+        )
+        .all()
+    )
+
+    if vinculos:
+        resultado = []
+        for vinculo in vinculos:
+            servico = validar_servico(
+                db,
+                vinculo.servico_id,
+                usuario_logado,
+            )
+            resultado.append((vinculo, servico))
+        return resultado
+
+    servico = validar_servico(
+        db,
+        agendamento.servico_id,
+        usuario_logado,
+    )
+    return [(None, servico)]
+
+
+def _duracao_total_servicos_catalogo(servicos):
+    return sum(
+        (servico.tempo_medio_minutos or 30)
+        for servico in servicos
+    )
+
+
+def _duracao_total_agendamento(
+    db,
+    agendamento,
+    usuario_logado,
+):
+    total = 0
+
+    for vinculo, servico in _carregar_servicos_agendamento(
+        db,
+        agendamento,
+        usuario_logado,
+    ):
+        if vinculo is not None:
+            duracao = (
+                vinculo.duracao_minutos_snapshot
+                or servico.tempo_medio_minutos
+                or 30
+            )
+        else:
+            duracao = servico.tempo_medio_minutos or 30
+
+        total += duracao
+
+    return total
+
+
+def _preco_vinculo_ou_catalogo(vinculo, servico):
+    if vinculo is not None and vinculo.preco_snapshot is not None:
+        return vinculo.preco_snapshot
+    return servico.preco
+
+
 def criar_agendamento_service(db, dados, usuario_logado):
     barbearia_id = obter_barbearia_id(usuario_logado)
 
@@ -214,11 +345,13 @@ def criar_agendamento_service(db, dados, usuario_logado):
         validar_barbeiro_liberado_por_plano(db, barbearia_id, dados.barbeiro_id)
     except ValueError as erro:
         raise HTTPException(status_code=403, detail=str(erro))
-    servico = validar_servico(
+    servicos_ids = _normalizar_servicos_ids_agendamento(dados)
+    servicos = _validar_servicos_agendamento(
         db,
-        dados.servico_id,
+        servicos_ids,
         usuario_logado,
     )
+    servico = servicos[0]
 
     validar_estilo(db, dados.estilo_corte_id, "Estilo de corte", usuario_logado)
     validar_estilo(db, dados.estilo_barba_id, "Estilo de barba", usuario_logado)
@@ -285,25 +418,52 @@ def criar_agendamento_service(db, dados, usuario_logado):
                     ),
                 )
 
-        if (assinatura.usos_disponiveis or 0) <= 0:
+        usos_necessarios = len(servicos)
+        if (assinatura.usos_disponiveis or 0) < usos_necessarios:
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Plano sem usos disponíveis. "
-                    "Escolha atendimento avulso."
+                    f"Plano sem usos suficientes para os serviÃ§os selecionados. "
+                    f"NecessÃ¡rios: {usos_necessarios}. "
+                    f"DisponÃ­veis: {assinatura.usos_disponiveis or 0}."
                 ),
             )
 
-        servico_no_plano = db.query(models.PlanoServico).join(models.Plano, models.Plano.id == models.PlanoServico.plano_id).filter(
-            models.PlanoServico.plano_id == assinatura.plano_id,
-            models.PlanoServico.servico_id == servico.id,
-            models.Plano.barbearia_id == barbearia_id,
-        ).first()
-        if not servico_no_plano:
-            raise HTTPException(status_code=400, detail="O serviço selecionado não está incluído no plano do cliente.")
+        servicos_no_plano = {
+            item[0]
+            for item in (
+                db.query(models.PlanoServico.servico_id)
+                .join(
+                    models.Plano,
+                    models.Plano.id == models.PlanoServico.plano_id,
+                )
+                .filter(
+                    models.PlanoServico.plano_id == assinatura.plano_id,
+                    models.PlanoServico.servico_id.in_(servicos_ids),
+                    models.Plano.barbearia_id == barbearia_id,
+                )
+                .all()
+            )
+        }
+
+        servicos_fora_plano = [
+            servico_item.id
+            for servico_item in servicos
+            if servico_item.id not in servicos_no_plano
+        ]
+
+        if servicos_fora_plano:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Todos os serviÃ§os selecionados devem estar incluÃ­dos "
+                    "no plano do cliente."
+                ),
+            )
 
     inicio = dados.data_hora_inicio
-    fim = inicio + timedelta(minutes=servico.tempo_medio_minutos or 30)
+    duracao_total = _duracao_total_servicos_catalogo(servicos)
+    fim = inicio + timedelta(minutes=duracao_total)
 
     validar_agendamento_no_expediente(
         db=db,
@@ -325,7 +485,7 @@ def criar_agendamento_service(db, dados, usuario_logado):
         barbearia_id=barbearia_id,
         cliente_id=dados.cliente_id,
         barbeiro_id=dados.barbeiro_id,
-        servico_id=dados.servico_id,
+        servico_id=servicos_ids[0],
         estilo_corte_id=dados.estilo_corte_id,
         estilo_barba_id=dados.estilo_barba_id,
         data_hora_inicio=inicio,
@@ -336,9 +496,29 @@ def criar_agendamento_service(db, dados, usuario_logado):
         origem=getattr(dados, "origem", "INTERNO") or "INTERNO",
     )
 
-    db.add(agendamento)
-    db.commit()
-    db.refresh(agendamento)
+    try:
+        db.add(agendamento)
+        db.flush()
+
+        for ordem, servico_item in enumerate(servicos, start=1):
+            db.add(
+                models.AgendamentoServico(
+                    agendamento_id=agendamento.id,
+                    servico_id=servico_item.id,
+                    ordem=ordem,
+                    preco_snapshot=servico_item.preco,
+                    duracao_minutos_snapshot=(
+                        servico_item.tempo_medio_minutos or 30
+                    ),
+                )
+            )
+
+        db.commit()
+        db.refresh(agendamento)
+
+    except Exception:
+        db.rollback()
+        raise
 
     return agendamento
 
@@ -366,6 +546,7 @@ def listar_agendamentos_service(db, usuario_logado):
     )
 
 
+# BARBSIST_M5_3_CANCELAMENTO_FIX
 def buscar_agendamento_service(db, agendamento_id: int, usuario_logado):
     agendamento = buscar_da_barbearia(
         db=db,
@@ -375,12 +556,6 @@ def buscar_agendamento_service(db, agendamento_id: int, usuario_logado):
         mensagem_nao_encontrado="Agendamento não encontrado.",
     )
 
-    try:
-        validar_barbeiro_liberado_por_plano(
-            db, barbearia_id, agendamento.barbeiro_id
-        )
-    except ValueError as erro:
-        raise HTTPException(status_code=403, detail=str(erro))
 
     _validar_acesso_barbeiro_agendamento(
         usuario_logado,
@@ -567,9 +742,9 @@ def converter_agendamento_em_comanda_service(
             detail="Agendamento não pode ser convertido em comanda.",
         )
 
-    servico = validar_servico(
+    servicos_agendamento = _carregar_servicos_agendamento(
         db,
-        agendamento.servico_id,
+        agendamento,
         usuario_logado,
     )
 
@@ -586,20 +761,29 @@ def converter_agendamento_em_comanda_service(
         db.add(comanda)
         db.flush()
 
-        item = models.ItemComanda(
-            comanda_id=comanda.id,
-            tipo="servico",
-            descricao=servico.nome,
-            quantidade=1,
-            valor_unitario=servico.preco,
-            subtotal=servico.preco,
-            servico_id=servico.id,
-        )
+        total_comanda = 0
 
-        comanda.total = servico.preco
+        for vinculo, servico_item in servicos_agendamento:
+            preco_item = _preco_vinculo_ou_catalogo(
+                vinculo,
+                servico_item,
+            )
+
+            item = models.ItemComanda(
+                comanda_id=comanda.id,
+                tipo="servico",
+                descricao=servico_item.nome,
+                quantidade=1,
+                valor_unitario=preco_item,
+                subtotal=preco_item,
+                servico_id=servico_item.id,
+            )
+
+            db.add(item)
+            total_comanda += preco_item
+
+        comanda.total = total_comanda
         agendamento.status = "em_atendimento"
-
-        db.add(item)
         db.commit()
         db.refresh(comanda)
 
@@ -642,9 +826,9 @@ def reagendar_agendamento_service(
             detail="Agendamento neste status não pode ser reagendado.",
         )
 
-    servico = validar_servico(
+    duracao_total = _duracao_total_agendamento(
         db,
-        agendamento.servico_id,
+        agendamento,
         usuario_logado,
     )
 
@@ -656,7 +840,7 @@ def reagendar_agendamento_service(
         raise HTTPException(status_code=403, detail=str(erro))
 
     novo_fim = nova_data_hora_inicio + timedelta(
-        minutes=servico.tempo_medio_minutos or 30
+        minutes=duracao_total
     )
 
     validar_agendamento_no_expediente(

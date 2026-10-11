@@ -3,7 +3,7 @@ import re
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -30,11 +30,18 @@ router = APIRouter(
 )
 
 
+# BARBSIST_MULTI_SERVICE_M3_PUBLIC_API
 class AgendamentoOnlineCreate(BaseModel):
     nome_cliente: str
     telefone_cliente: str
     barbeiro_id: int
-    servico_id: int
+
+    # Compatibilidade:
+    # - clientes antigos continuam enviando servico_id
+    # - clientes novos podem enviar servicos_ids
+    servico_id: int | None = None
+    servicos_ids: list[int] = Field(default_factory=list)
+
     data_hora_inicio: datetime
     tipo_atendimento: str = "avulso"
     observacoes: str | None = None
@@ -210,15 +217,197 @@ def validar_servico_publico(
     return servico
 
 
+def normalizar_servicos_ids_publicos(
+    servico_id: int | None = None,
+    servicos_ids=None,
+):
+    valores = []
+
+    if isinstance(servicos_ids, str):
+        valores = [
+            item.strip()
+            for item in servicos_ids.split(",")
+            if item.strip()
+        ]
+    elif servicos_ids:
+        valores = list(servicos_ids)
+
+    if not valores and servico_id is not None:
+        valores = [servico_id]
+
+    resultado = []
+    vistos = set()
+
+    for valor in valores:
+        try:
+            id_normalizado = int(valor)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="Identificador de serviÃ§o invÃ¡lido.",
+            )
+
+        if id_normalizado <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Identificador de serviÃ§o invÃ¡lido.",
+            )
+
+        if id_normalizado not in vistos:
+            vistos.add(id_normalizado)
+            resultado.append(id_normalizado)
+
+    if not resultado:
+        raise HTTPException(
+            status_code=400,
+            detail="Selecione pelo menos um serviÃ§o.",
+        )
+
+    return resultado
+
+
+def validar_servicos_publicos(
+    db: Session,
+    barbearia_id: int,
+    servicos_ids,
+):
+    return [
+        validar_servico_publico(
+            db,
+            barbearia_id,
+            servico_id,
+        )
+        for servico_id in servicos_ids
+    ]
+
+
+def duracao_total_servicos_publicos(servicos):
+    return sum(
+        (servico.tempo_medio_minutos or 30)
+        for servico in servicos
+    )
+
+
+def resumo_servicos_agendamento_publico(
+    db: Session,
+    agendamento,
+):
+    vinculos = (
+        db.query(models.AgendamentoServico)
+        .filter(
+            models.AgendamentoServico.agendamento_id
+            == agendamento.id
+        )
+        .order_by(
+            models.AgendamentoServico.ordem.asc(),
+            models.AgendamentoServico.id.asc(),
+        )
+        .all()
+    )
+
+    servicos = []
+
+    if vinculos:
+        for vinculo in vinculos:
+            servico = (
+                db.query(models.Servico)
+                .filter(
+                    models.Servico.id == vinculo.servico_id,
+                    models.Servico.barbearia_id
+                    == agendamento.barbearia_id,
+                )
+                .first()
+            )
+
+            servicos.append({
+                "id": vinculo.servico_id,
+                "nome": (
+                    servico.nome
+                    if servico
+                    else f"ServiÃ§o #{vinculo.servico_id}"
+                ),
+                "duracao_minutos": int(
+                    vinculo.duracao_minutos_snapshot
+                    or (
+                        servico.tempo_medio_minutos
+                        if servico
+                        else 30
+                    )
+                    or 30
+                ),
+                "preco": float(
+                    vinculo.preco_snapshot
+                    if vinculo.preco_snapshot is not None
+                    else (
+                        servico.preco
+                        if servico
+                        else 0
+                    )
+                ),
+            })
+
+    elif agendamento.servico_id is not None:
+        servico = (
+            db.query(models.Servico)
+            .filter(
+                models.Servico.id == agendamento.servico_id,
+                models.Servico.barbearia_id
+                == agendamento.barbearia_id,
+            )
+            .first()
+        )
+
+        if servico:
+            servicos.append({
+                "id": servico.id,
+                "nome": servico.nome,
+                "duracao_minutos": int(
+                    servico.tempo_medio_minutos or 30
+                ),
+                "preco": float(servico.preco or 0),
+            })
+
+    return {
+        "servicos": servicos,
+        "servicos_ids": [
+            item["id"]
+            for item in servicos
+        ],
+        "nomes": [
+            item["nome"]
+            for item in servicos
+        ],
+        "duracao_total_minutos": sum(
+            item["duracao_minutos"]
+            for item in servicos
+        ),
+        "valor_total": sum(
+            item["preco"]
+            for item in servicos
+        ),
+    }
+
+
 @router.get("/{barbearia_slug}/horarios-dia")
 def horarios_disponiveis_dia(
     barbearia_slug: str,
-    servico_id: int = Query(...),
     data: date = Query(...),
+    servico_id: int | None = Query(default=None),
+    servicos_ids: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     barbearia = obter_barbearia_publica(db, barbearia_slug)
-    servico = validar_servico_publico(db, barbearia.id, servico_id)
+
+    ids = normalizar_servicos_ids_publicos(
+        servico_id=servico_id,
+        servicos_ids=servicos_ids,
+    )
+    servicos = validar_servicos_publicos(
+        db,
+        barbearia.id,
+        ids,
+    )
+    duracao_total = duracao_total_servicos_publicos(servicos)
 
     barbeiros = (
         db.query(models.Barbeiro)
@@ -232,8 +421,13 @@ def horarios_disponiveis_dia(
 
     horarios_livres = []
     for barbeiro in barbeiros:
-        if barbeiro_bloqueado_por_plano(db, barbearia.id, barbeiro.id):
+        if barbeiro_bloqueado_por_plano(
+            db,
+            barbearia.id,
+            barbeiro.id,
+        ):
             continue
+
         horarios_livres.extend(
             gerar_horarios_livres_para_barbeiro(
                 db=db,
@@ -241,11 +435,13 @@ def horarios_disponiveis_dia(
                 barbeiro_id=barbeiro.id,
                 barbeiro_nome=barbeiro.nome,
                 data_agenda=data,
-                duracao=servico.tempo_medio_minutos or 30,
+                duracao=duracao_total,
             )
         )
 
-    horarios_livres.sort(key=lambda item: item["data_hora_inicio"])
+    horarios_livres.sort(
+        key=lambda item: item["data_hora_inicio"]
+    )
     return horarios_livres
 
 
@@ -253,25 +449,42 @@ def horarios_disponiveis_dia(
 def horarios_disponiveis_semana(
     barbearia_slug: str,
     barbeiro_id: int = Query(...),
-    servico_id: int = Query(...),
     data_inicio: date = Query(...),
+    servico_id: int | None = Query(default=None),
+    servicos_ids: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     barbearia = obter_barbearia_publica(db, barbearia_slug)
-    barbeiro = validar_barbeiro_publico(db, barbearia.id, barbeiro_id)
-    servico = validar_servico_publico(db, barbearia.id, servico_id)
+    barbeiro = validar_barbeiro_publico(
+        db,
+        barbearia.id,
+        barbeiro_id,
+    )
+
+    ids = normalizar_servicos_ids_publicos(
+        servico_id=servico_id,
+        servicos_ids=servicos_ids,
+    )
+    servicos = validar_servicos_publicos(
+        db,
+        barbearia.id,
+        ids,
+    )
+    duracao_total = duracao_total_servicos_publicos(servicos)
 
     semana = []
     for indice in range(7):
         data_agenda = data_inicio + timedelta(days=indice)
+
         horarios = gerar_horarios_livres_para_barbeiro(
             db=db,
             barbearia_id=barbearia.id,
             barbeiro_id=barbeiro.id,
             barbeiro_nome=barbeiro.nome,
             data_agenda=data_agenda,
-            duracao=servico.tempo_medio_minutos or 30,
+            duracao=duracao_total,
         )
+
         semana.append({
             "data": data_agenda.isoformat(),
             "dia_semana": data_agenda.weekday(),
@@ -289,15 +502,39 @@ def criar_agendamento_online(
     dados: AgendamentoOnlineCreate,
     db: Session = Depends(get_db),
 ):
-    barbearia = obter_barbearia_publica(db, barbearia_slug)
+    barbearia = obter_barbearia_publica(
+        db,
+        barbearia_slug,
+    )
 
-    if not agendamento_online_habilitado(db, barbearia.id):
+    if not agendamento_online_habilitado(
+        db,
+        barbearia.id,
+    ):
         raise HTTPException(
             status_code=403,
-            detail="Agendamento online não está disponível nesta barbearia.",
+            detail=(
+                "Agendamento online nÃ£o estÃ¡ disponÃ­vel "
+                "nesta barbearia."
+            ),
         )
-    validar_barbeiro_publico(db, barbearia.id, dados.barbeiro_id)
-    validar_servico_publico(db, barbearia.id, dados.servico_id)
+
+    validar_barbeiro_publico(
+        db,
+        barbearia.id,
+        dados.barbeiro_id,
+    )
+
+    ids = normalizar_servicos_ids_publicos(
+        servico_id=dados.servico_id,
+        servicos_ids=dados.servicos_ids,
+    )
+
+    validar_servicos_publicos(
+        db,
+        barbearia.id,
+        ids,
+    )
 
     cliente = obter_ou_criar_cliente_por_telefone(
         db=db,
@@ -309,7 +546,8 @@ def criar_agendamento_online(
     dados_agendamento = AgendamentoCreate(
         cliente_id=cliente.id,
         barbeiro_id=dados.barbeiro_id,
-        servico_id=dados.servico_id,
+        servico_id=ids[0],
+        servicos_ids=ids,
         data_hora_inicio=dados.data_hora_inicio,
         tipo_atendimento=dados.tipo_atendimento,
         observacoes=dados.observacoes,
@@ -319,7 +557,9 @@ def criar_agendamento_online(
     return criar_agendamento_service(
         db=db,
         dados=dados_agendamento,
-        usuario_logado=criar_contexto_publico(barbearia.id),
+        usuario_logado=criar_contexto_publico(
+            barbearia.id
+        ),
     )
 
 
@@ -329,8 +569,15 @@ def consultar_agendamento(
     telefone: str,
     db: Session = Depends(get_db),
 ):
-    barbearia = obter_barbearia_publica(db, barbearia_slug)
-    cliente = buscar_cliente_por_telefone(db, barbearia.id, telefone)
+    barbearia = obter_barbearia_publica(
+        db,
+        barbearia_slug,
+    )
+    cliente = buscar_cliente_por_telefone(
+        db,
+        barbearia.id,
+        telefone,
+    )
 
     if not cliente:
         raise HTTPException(
@@ -341,24 +588,65 @@ def consultar_agendamento(
     agendamentos = (
         db.query(models.Agendamento)
         .filter(
-            models.Agendamento.barbearia_id == barbearia.id,
-            models.Agendamento.cliente_id == cliente.id,
-            func.lower(models.Agendamento.status) != "cancelado",
-            models.Agendamento.data_hora_inicio >= datetime.now(),
+            models.Agendamento.barbearia_id
+            == barbearia.id,
+            models.Agendamento.cliente_id
+            == cliente.id,
+            func.lower(models.Agendamento.status)
+            != "cancelado",
+            models.Agendamento.data_hora_inicio
+            >= datetime.now(),
         )
-        .order_by(models.Agendamento.data_hora_inicio.asc())
+        .order_by(
+            models.Agendamento.data_hora_inicio.asc()
+        )
         .all()
     )
 
-    resultado = [{
-        "id": item.id,
-        "servico": item.servico.nome if item.servico else "-",
-        "barbeiro": item.barbeiro.nome if item.barbeiro else "-",
-        "data_hora_inicio": item.data_hora_inicio,
-        "status": item.status,
-        "tipo_atendimento": item.tipo_atendimento,
-        "origem": item.origem,
-    } for item in agendamentos]
+    resultado = []
+
+    for item in agendamentos:
+        resumo = resumo_servicos_agendamento_publico(
+            db,
+            item,
+        )
+
+        nomes = resumo["nomes"]
+        nome_legado = (
+            nomes[0]
+            if nomes
+            else (
+                item.servico.nome
+                if item.servico
+                else "-"
+            )
+        )
+
+        resultado.append({
+            "id": item.id,
+
+            # Campo legado preservado.
+            "servico": nome_legado,
+
+            # Novos campos multissservico.
+            "servicos": resumo["servicos"],
+            "servicos_ids": resumo["servicos_ids"],
+            "duracao_total_minutos": (
+                resumo["duracao_total_minutos"]
+            ),
+            "valor_total": resumo["valor_total"],
+
+            "barbeiro": (
+                item.barbeiro.nome
+                if item.barbeiro
+                else "-"
+            ),
+            "data_hora_inicio": item.data_hora_inicio,
+            "data_hora_fim": item.data_hora_fim,
+            "status": item.status,
+            "tipo_atendimento": item.tipo_atendimento,
+            "origem": item.origem,
+        })
 
     return {
         "cliente": cliente.nome,
