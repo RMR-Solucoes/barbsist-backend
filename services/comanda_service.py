@@ -848,6 +848,7 @@ def _reverter_item_aberto(
     db,
     item,
     comanda,
+    usuario_id=None,
 ):
     if item.tipo == "produto" and item.produto_id:
         produto = obter_produto_para_movimentacao(
@@ -858,6 +859,11 @@ def _reverter_item_aberto(
         devolver_estoque(
             produto,
             item.quantidade or 0,
+            db=db,
+            origem="DEVOLUCAO_COMANDA",
+            referencia_id=comanda.id,
+            usuario_id=usuario_id,
+            observacao=f"Devolução de produto da comanda #{comanda.id}.",
         )
 
     if (
@@ -938,6 +944,7 @@ def remover_item_comanda_service(
             db,
             item,
             comanda,
+            usuario_id=getattr(usuario_logado, "id", None),
         )
         db.delete(item)
         db.flush()
@@ -1007,6 +1014,7 @@ def cancelar_comanda_service(
                 db,
                 item,
                 comanda,
+                usuario_id=getattr(usuario_logado, "id", None),
             )
 
         comanda.status = "cancelada"
@@ -1105,7 +1113,12 @@ def excluir_comanda_teste_service(
         ).all()
         if situacao == "aberta":
             for item in itens:
-                _reverter_item_aberto(db, item, comanda)
+                _reverter_item_aberto(
+                    db,
+                    item,
+                    comanda,
+                    usuario_id=getattr(usuario_logado, "id", None),
+                )
 
         for cobranca in cobrancas:
             db.delete(cobranca)

@@ -207,7 +207,8 @@ class ProdutoBase(BaseModel):
     categoria: Optional[str] = None
     preco_custo: float = 0
     preco_venda: float
-    estoque: int = 0
+    estoque: int = Field(default=0, ge=0)
+    estoque_minimo: int = Field(default=2, ge=0)
     codigo_qr: Optional[str] = None
 
 
@@ -220,7 +221,8 @@ class ProdutoUpdate(BaseModel):
     categoria: Optional[str] = None
     preco_custo: Optional[float] = None
     preco_venda: Optional[float] = None
-    estoque: Optional[int] = None
+    estoque: Optional[int] = Field(default=None, ge=0)
+    estoque_minimo: Optional[int] = Field(default=None, ge=0)
     codigo_qr: Optional[str] = None
 
 
@@ -230,6 +232,34 @@ class ProdutoResponse(ProdutoBase):
     codigo: str
     barbearia_id: int
     ativo: bool
+
+    class Config:
+        from_attributes = True
+
+
+class EntradaEstoqueRequest(BaseModel):
+    quantidade: int = Field(gt=0)
+    observacao: Optional[str] = Field(default=None, max_length=500)
+
+
+class AjusteEstoqueRequest(BaseModel):
+    novo_estoque: int = Field(ge=0)
+    observacao: str = Field(min_length=3, max_length=500)
+
+
+class MovimentacaoEstoqueResponse(BaseModel):
+    id: int
+    barbearia_id: int
+    produto_id: int
+    tipo: str
+    origem: str
+    quantidade: int
+    saldo_anterior: int
+    saldo_posterior: int
+    referencia_id: Optional[int] = None
+    usuario_id: Optional[int] = None
+    observacao: Optional[str] = None
+    data: datetime
 
     class Config:
         from_attributes = True

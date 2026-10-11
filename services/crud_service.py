@@ -22,13 +22,18 @@ def criar_registro_com_codigo(
     model: Type[Any],
     dados: dict,
     tipo_sequencia: str,
-    usuario_logado: models.Usuario
+    usuario_logado: models.Usuario,
+    confirmar_commit: bool = True,
 ):
     """
     Cria um registro vinculado à barbearia atual e gera
     automaticamente seu código comercial.
 
-    O commit fica centralizado nesta função.
+    Por padrão, o commit fica centralizado nesta função.
+
+    Quando confirmar_commit=False, realiza apenas flush. Isso permite
+    que o service chamador inclua operações adicionais na mesma
+    transação antes do commit definitivo.
     """
 
     barbearia = obter_barbearia_usuario(
@@ -53,7 +58,12 @@ def criar_registro_com_codigo(
         )
 
         db.add(registro)
-        db.commit()
+
+        if confirmar_commit:
+            db.commit()
+        else:
+            db.flush()
+
         db.refresh(registro)
 
         return registro

@@ -10,6 +10,9 @@ from schemas import (
     ProdutoCreate,
     ProdutoUpdate,
     ProdutoResponse,
+    EntradaEstoqueRequest,
+    AjusteEstoqueRequest,
+    MovimentacaoEstoqueResponse,
 )
 
 from auth.permissions import (
@@ -24,6 +27,12 @@ from services.produto_service import (
     atualizar_produto_service,
     inativar_produto_service,
     reativar_produto_service,
+)
+
+from services.estoque_service import (
+    entrada_estoque_service,
+    ajustar_estoque_service,
+    listar_movimentacoes_estoque_service,
 )
 
 
@@ -66,6 +75,68 @@ def listar_produtos(
         db=db,
         usuario_logado=usuario_logado,
         apenas_ativos=apenas_ativos,
+    )
+
+
+@router.post(
+    "/{produto_id}/estoque/entrada",
+    response_model=ProdutoResponse,
+)
+def entrada_estoque(
+    produto_id: int,
+    dados: EntradaEstoqueRequest,
+    db: Session = Depends(get_db),
+    usuario_logado: models.Usuario = Depends(
+        admin_gerente_ou_recepcao
+    ),
+):
+    return entrada_estoque_service(
+        db=db,
+        produto_id=produto_id,
+        quantidade=dados.quantidade,
+        observacao=dados.observacao,
+        usuario_logado=usuario_logado,
+    )
+
+
+@router.post(
+    "/{produto_id}/estoque/ajuste",
+    response_model=ProdutoResponse,
+)
+def ajustar_estoque(
+    produto_id: int,
+    dados: AjusteEstoqueRequest,
+    db: Session = Depends(get_db),
+    usuario_logado: models.Usuario = Depends(
+        admin_gerente_ou_recepcao
+    ),
+):
+    return ajustar_estoque_service(
+        db=db,
+        produto_id=produto_id,
+        novo_estoque=dados.novo_estoque,
+        observacao=dados.observacao,
+        usuario_logado=usuario_logado,
+    )
+
+
+@router.get(
+    "/{produto_id}/estoque/movimentacoes",
+    response_model=list[MovimentacaoEstoqueResponse],
+)
+def listar_movimentacoes_estoque(
+    produto_id: int,
+    limite: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    usuario_logado: models.Usuario = Depends(
+        admin_gerente_ou_recepcao
+    ),
+):
+    return listar_movimentacoes_estoque_service(
+        db=db,
+        produto_id=produto_id,
+        usuario_logado=usuario_logado,
+        limite=limite,
     )
 
 

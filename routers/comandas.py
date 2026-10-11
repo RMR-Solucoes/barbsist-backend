@@ -524,7 +524,12 @@ def adicionar_produto_na_comanda(
 
     baixar_estoque(
         produto=produto,
-        quantidade=item.quantidade
+        quantidade=item.quantidade,
+        db=db,
+        origem="COMANDA",
+        referencia_id=comanda.id,
+        usuario_id=getattr(usuario_logado, "id", None),
+        observacao=f"Produto adicionado à comanda #{comanda.id}.",
     )
 
     comanda.total = (

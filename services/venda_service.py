@@ -181,6 +181,11 @@ def adicionar_produto_venda_service(
     baixar_estoque(
         produto,
         quantidade,
+        db=db,
+        origem="VENDA",
+        referencia_id=venda.id,
+        usuario_id=getattr(usuario_logado, "id", None),
+        observacao=f"Produto adicionado à venda #{venda.id}.",
     )
 
     item = models.ItemVenda(
@@ -253,6 +258,11 @@ def remover_item_venda_service(
     devolver_estoque(
         produto,
         item.quantidade or 0,
+        db=db,
+        origem="DEVOLUCAO_VENDA",
+        referencia_id=venda.id,
+        usuario_id=getattr(usuario_logado, "id", None),
+        observacao=f"Item removido da venda #{venda.id}.",
     )
 
     venda.total = max(
@@ -393,6 +403,11 @@ def cancelar_venda_service(
             devolver_estoque(
                 produto,
                 item.quantidade or 0,
+                db=db,
+                origem="DEVOLUCAO_VENDA",
+                referencia_id=venda.id,
+                usuario_id=getattr(usuario_logado, "id", None),
+                observacao=f"Cancelamento da venda #{venda.id}.",
             )
 
         venda.status = "cancelada"

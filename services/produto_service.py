@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 import models
 
 from auth.tenant import obter_barbearia_id
+from services.estoque_service import registrar_movimentacao_estoque
 
 from services.crud_service import (
     criar_registro_com_codigo,
@@ -63,6 +64,7 @@ def validar_valores_produto(
     preco_custo: float,
     preco_venda: float,
     estoque: int,
+    estoque_minimo: int = 0,
 ):
     """
     Impede preços ou estoque negativos.
@@ -88,6 +90,12 @@ def validar_valores_produto(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="O estoque não pode ser negativo.",
+        )
+
+    if estoque_minimo < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="O estoque mínimo não pode ser negativo.",
         )
 
 
@@ -186,6 +194,7 @@ def criar_produto_service(
         preco_custo=dados.preco_custo,
         preco_venda=dados.preco_venda,
         estoque=dados.estoque,
+        estoque_minimo=dados.estoque_minimo,
     )
 
     validar_duplicidade_produto(
@@ -195,21 +204,48 @@ def criar_produto_service(
         codigo_qr=codigo_qr,
     )
 
-    return criar_registro_com_codigo(
-        db=db,
-        model=models.Produto,
-        tipo_sequencia="PRODUTO",
-        usuario_logado=usuario_logado,
-        dados={
-            "nome": nome,
-            "categoria": categoria,
-            "preco_custo": dados.preco_custo,
-            "preco_venda": dados.preco_venda,
-            "estoque": dados.estoque,
-            "codigo_qr": codigo_qr,
-            "ativo": True,
-        },
-    )
+    try:
+        produto = criar_registro_com_codigo(
+            db=db,
+            model=models.Produto,
+            tipo_sequencia="PRODUTO",
+            usuario_logado=usuario_logado,
+            confirmar_commit=False,
+            dados={
+                "nome": nome,
+                "categoria": categoria,
+                "preco_custo": dados.preco_custo,
+                "preco_venda": dados.preco_venda,
+                "estoque": dados.estoque,
+                "estoque_minimo": dados.estoque_minimo,
+                "codigo_qr": codigo_qr,
+                "ativo": True,
+            },
+        )
+
+        registrar_movimentacao_estoque(
+            db,
+            produto=produto,
+            tipo="SALDO",
+            origem="CADASTRO_PRODUTO",
+            quantidade=int(produto.estoque or 0),
+            saldo_anterior=0,
+            saldo_posterior=int(produto.estoque or 0),
+            usuario_id=getattr(usuario_logado, "id", None),
+            observacao="Saldo inicial informado no cadastro do produto.",
+        )
+
+        db.commit()
+        db.refresh(produto)
+        return produto
+
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except Exception:
+        db.rollback()
+        raise
 
 
 def listar_produtos_service(
@@ -276,6 +312,24 @@ def atualizar_produto_service(
         exclude_unset=True
     )
 
+    if (
+        "estoque" in dados_atualizacao
+        and dados_atualizacao["estoque"] is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="O estoque não pode ser nulo.",
+        )
+
+    if (
+        "estoque_minimo" in dados_atualizacao
+        and dados_atualizacao["estoque_minimo"] is None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="O estoque mínimo não pode ser nulo.",
+        )
+
     novo_nome = produto.nome
     novo_codigo_qr = produto.codigo_qr
 
@@ -315,10 +369,28 @@ def atualizar_produto_service(
         produto.estoque,
     )
 
+    novo_estoque_minimo = dados_atualizacao.get(
+        "estoque_minimo",
+        produto.estoque_minimo,
+    )
+
+    if "estoque" in dados_atualizacao:
+        if int(novo_estoque) != int(produto.estoque or 0):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "O saldo de estoque não pode ser alterado pela edição "
+                    "do produto. Use Entrada ou Ajuste de estoque."
+                ),
+            )
+
+        dados_atualizacao.pop("estoque", None)
+
     validar_valores_produto(
         preco_custo=novo_preco_custo,
         preco_venda=novo_preco_venda,
-        estoque=novo_estoque,
+        estoque=int(produto.estoque or 0),
+        estoque_minimo=novo_estoque_minimo,
     )
 
     validar_duplicidade_produto(

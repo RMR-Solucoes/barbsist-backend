@@ -467,6 +467,12 @@ class Produto(BarbeariaMixin, Base):
         nullable=False
     )
 
+    estoque_minimo = Column(
+        Integer,
+        default=2,
+        nullable=False
+    )
+
     codigo_qr = Column(
         String,
         nullable=True
@@ -477,6 +483,66 @@ class Produto(BarbeariaMixin, Base):
         default=True,
         nullable=False
     )
+
+
+
+class MovimentacaoEstoque(BarbeariaMixin, Base):
+    __tablename__ = "movimentacoes_estoque"
+
+    __table_args__ = (
+        Index(
+            "ix_mov_estoque_barbearia_produto_data",
+            "barbearia_id",
+            "produto_id",
+            "data",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    produto_id = Column(
+        Integer,
+        ForeignKey("produtos.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    tipo = Column(String, nullable=False, index=True)
+    origem = Column(String, nullable=False, index=True)
+
+    quantidade = Column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
+
+    saldo_anterior = Column(Integer, nullable=False)
+    saldo_posterior = Column(Integer, nullable=False)
+
+    referencia_id = Column(
+        Integer,
+        nullable=True,
+        index=True,
+    )
+
+    usuario_id = Column(
+        Integer,
+        ForeignKey("usuarios.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+
+    observacao = Column(String, nullable=True)
+
+    data = Column(
+        DateTime,
+        default=datetime.now,
+        nullable=False,
+        index=True,
+    )
+
+    produto = relationship("Produto")
+    usuario = relationship("Usuario")
 
 
 class Comanda(BarbeariaMixin, Base):
