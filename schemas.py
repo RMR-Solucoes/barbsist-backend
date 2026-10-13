@@ -60,6 +60,11 @@ class BarbeariaUpdate(BaseModel):
     estado: str | None = None
     cep: str | None = None
 
+    # Catalogo publico / geolocalizacao
+    catalogo_publico_ativo: bool | None = None
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+
     instagram: str | None = None
     logo_url: str | None = None
     slogan: str | None = None
@@ -80,10 +85,36 @@ class BarbeariaResponse(BarbeariaBase):
     codigo: int
     slug: str
     ativa: bool
+    catalogo_publico_ativo: bool = False
+    latitude: float | None = None
+    longitude: float | None = None
     created_at: datetime | None = None
 
     class Config:
         from_attributes = True
+
+
+class BarbeariaGeocodificarEnderecoRequest(BaseModel):
+    endereco: str
+    cidade: str
+    estado: str
+    cep: str | None = None
+
+
+class BarbeariaGeocodificarEnderecoResponse(BaseModel):
+    latitude: float
+    longitude: float
+    endereco_formatado: str
+    confianca: float | None = None
+    nivel_confianca: str
+    catalogo_permitido: bool
+    validacoes: list[str] = Field(default_factory=list)
+    endereco_postal: str
+    bairro_postal: str | None = None
+    cidade_postal: str
+    estado_postal: str
+    cep_validado: str
+
 
 # =========================
 # CLIENTES

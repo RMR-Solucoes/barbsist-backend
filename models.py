@@ -92,6 +92,23 @@ class Barbearia(Base):
         nullable=True
     )
 
+    # Catalogo publico / geolocalizacao
+    catalogo_publico_ativo = Column(
+        Boolean,
+        default=False,
+        nullable=False
+    )
+
+    latitude = Column(
+        Float,
+        nullable=True
+    )
+
+    longitude = Column(
+        Float,
+        nullable=True
+    )
+
     # Identidade visual
     instagram = Column(
         String,

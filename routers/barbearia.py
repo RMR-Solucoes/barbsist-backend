@@ -10,7 +10,9 @@ from database import get_db
 from schemas import (
     BarbeariaCreate,
     BarbeariaUpdate,
-    BarbeariaResponse
+    BarbeariaResponse,
+    BarbeariaGeocodificarEnderecoRequest,
+    BarbeariaGeocodificarEnderecoResponse
 )
 
 from services.barbearia_service import (
@@ -20,6 +22,10 @@ from services.barbearia_service import (
     obter_minha_barbearia_service,
     atualizar_minha_barbearia_service,
     alterar_status_barbearia_service
+)
+
+from services.geocodificacao_service import (
+    geocodificar_endereco_barbearia
 )
 
 from auth.permissions import (
@@ -159,4 +165,19 @@ def atualizar_minha_barbearia(
         db=db,
         dados=dados,
         usuario_logado=usuario_logado
+    )
+
+
+@router.post(
+    "/minha/geocodificar-endereco",
+    response_model=BarbeariaGeocodificarEnderecoResponse
+)
+def geocodificar_endereco_minha_barbearia(
+    dados: BarbeariaGeocodificarEnderecoRequest,
+    usuario_logado=Depends(
+        admin_ou_gerente
+    )
+):
+    return geocodificar_endereco_barbearia(
+        dados=dados
     )
