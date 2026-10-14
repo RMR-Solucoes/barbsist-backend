@@ -7,6 +7,7 @@ from datetime import datetime
 from routers import usuarios, mercado_pago, barbsist_assinaturas, admin_assinaturas_saas, admin_plataforma
 from routers import financeiro_plataforma
 from routers import dashboard
+from routers import publico
 
 from parceiros.router_parceiros import router as parceiros_router
 from parceiros.router_portal_parceiro import router as portal_parceiro_router
@@ -135,6 +136,7 @@ app.include_router(contas_receber.router)
 app.include_router(contas_pagar.router)
 app.include_router(financeiro.router)
 app.include_router(dashboard.router)
+app.include_router(publico.router)
 
 app.include_router(usuarios.router)
 app.include_router(mercado_pago.router)
