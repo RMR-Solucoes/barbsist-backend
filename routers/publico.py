@@ -7,6 +7,10 @@ from sqlalchemy.orm import Session
 from database import get_db
 import models
 from routers.agendamento_online import agendamento_online_habilitado
+from services.elegibilidade_publica_saas_service import (
+    avaliar_elegibilidade_publica_saas,
+    mapear_elegibilidades_publicas_saas,
+)
 
 
 router = APIRouter(
@@ -137,9 +141,24 @@ def listar_barbearias_proximas(
         .all()
     )
 
+    elegibilidades = mapear_elegibilidades_publicas_saas(
+        db,
+        [barbearia.id for barbearia in candidatas],
+    )
+
     encontradas = []
 
     for barbearia in candidatas:
+        elegibilidade = elegibilidades.get(
+            barbearia.id
+        )
+
+        if (
+            elegibilidade is None
+            or not elegibilidade.permite_catalogo
+        ):
+            continue
+
         distancia = calcular_distancia_km(
             latitude,
             longitude,
@@ -178,6 +197,7 @@ def listar_barbearias_proximas(
                     agendamento_online_habilitado(
                         db,
                         barbearia.id,
+                        elegibilidade=elegibilidade,
                     )
                 ),
             )
@@ -223,6 +243,17 @@ def consultar_perfil_publico_barbearia(
             detail="Barbearia não encontrada.",
         )
 
+    elegibilidade = avaliar_elegibilidade_publica_saas(
+        db,
+        barbearia.id,
+    )
+
+    if not elegibilidade.permite_perfil:
+        raise HTTPException(
+            status_code=404,
+            detail="Barbearia não encontrada.",
+        )
+
     servicos = (
         db.query(models.Servico)
         .filter(
@@ -258,6 +289,7 @@ def consultar_perfil_publico_barbearia(
         permitir_agendamento_portal=agendamento_online_habilitado(
             db,
             barbearia.id,
+            elegibilidade=elegibilidade,
         ),
         servicos=[
             ServicoPublicoPerfil(

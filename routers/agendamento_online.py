@@ -21,6 +21,9 @@ from services.barbeiro_disponibilidade_service import (
 from services.configuracao_funcionamento_service import (
     buscar_configuracao_publica_por_dia,
 )
+from services.elegibilidade_publica_saas_service import (
+    avaliar_elegibilidade_publica_saas,
+)
 from services.sequencia_service import gerar_codigo_comercial
 
 
@@ -72,20 +75,53 @@ def obter_barbearia_publica(
 def agendamento_online_habilitado(
     db: Session,
     barbearia_id: int,
+    *,
+    elegibilidade=None,
 ) -> bool:
     from portal_cliente.models import PortalClienteConfiguracao
 
     config = (
         db.query(PortalClienteConfiguracao)
         .filter(
-            PortalClienteConfiguracao.barbearia_id == barbearia_id,
+            PortalClienteConfiguracao.barbearia_id
+            == barbearia_id,
         )
         .first()
     )
 
-    return bool(
+    if not (
         config
         and config.permitir_agendamento_portal
+    ):
+        return False
+
+    if elegibilidade is None:
+        elegibilidade = avaliar_elegibilidade_publica_saas(
+            db,
+            barbearia_id,
+        )
+
+    return bool(
+        elegibilidade.permite_agendamento
+    )
+
+
+def validar_agendamento_online_disponivel(
+    db: Session,
+    barbearia_id: int,
+) -> None:
+    if agendamento_online_habilitado(
+        db,
+        barbearia_id,
+    ):
+        return
+
+    raise HTTPException(
+        status_code=403,
+        detail=(
+            "Agendamento online não está disponível "
+            "nesta barbearia."
+        ),
     )
 
 
@@ -130,6 +166,11 @@ def listar_barbeiros_online(
     db: Session = Depends(get_db),
 ):
     barbearia = obter_barbearia_publica(db, barbearia_slug)
+
+    validar_agendamento_online_disponivel(
+        db,
+        barbearia.id,
+    )
     barbeiros = (
         db.query(models.Barbeiro)
         .filter(
@@ -164,6 +205,11 @@ def listar_servicos_online(
     db: Session = Depends(get_db),
 ):
     barbearia = obter_barbearia_publica(db, barbearia_slug)
+
+    validar_agendamento_online_disponivel(
+        db,
+        barbearia.id,
+    )
     return (
         db.query(models.Servico)
         .filter(
@@ -398,6 +444,11 @@ def horarios_disponiveis_dia(
 ):
     barbearia = obter_barbearia_publica(db, barbearia_slug)
 
+    validar_agendamento_online_disponivel(
+        db,
+        barbearia.id,
+    )
+
     ids = normalizar_servicos_ids_publicos(
         servico_id=servico_id,
         servicos_ids=servicos_ids,
@@ -455,6 +506,11 @@ def horarios_disponiveis_semana(
     db: Session = Depends(get_db),
 ):
     barbearia = obter_barbearia_publica(db, barbearia_slug)
+
+    validar_agendamento_online_disponivel(
+        db,
+        barbearia.id,
+    )
     barbeiro = validar_barbeiro_publico(
         db,
         barbearia.id,
@@ -507,17 +563,10 @@ def criar_agendamento_online(
         barbearia_slug,
     )
 
-    if not agendamento_online_habilitado(
+    validar_agendamento_online_disponivel(
         db,
         barbearia.id,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Agendamento online nÃ£o estÃ¡ disponÃ­vel "
-                "nesta barbearia."
-            ),
-        )
+    )
 
     validar_barbeiro_publico(
         db,
