@@ -28,6 +28,8 @@ class BarbeariaPublicaProxima(BaseModel):
     logo_url: str | None = None
     slogan: str | None = None
     imagem_capa_url: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
     permitir_agendamento_portal: bool
 
 
@@ -55,6 +57,8 @@ class BarbeariaPublicaPerfil(BaseModel):
     logo_url: str | None = None
     slogan: str | None = None
     imagem_capa_url: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
     permitir_agendamento_portal: bool
     servicos: list[ServicoPublicoPerfil]
 
@@ -160,6 +164,16 @@ def listar_barbearias_proximas(
                 logo_url=barbearia.logo_url,
                 slogan=barbearia.slogan,
                 imagem_capa_url=barbearia.imagem_capa_url,
+                latitude=(
+                    float(barbearia.latitude)
+                    if barbearia.latitude is not None
+                    else None
+                ),
+                longitude=(
+                    float(barbearia.longitude)
+                    if barbearia.longitude is not None
+                    else None
+                ),
                 permitir_agendamento_portal=(
                     agendamento_online_habilitado(
                         db,
@@ -231,6 +245,16 @@ def consultar_perfil_publico_barbearia(
         logo_url=barbearia.logo_url,
         slogan=barbearia.slogan,
         imagem_capa_url=barbearia.imagem_capa_url,
+        latitude=(
+            float(barbearia.latitude)
+            if barbearia.latitude is not None
+            else None
+        ),
+        longitude=(
+            float(barbearia.longitude)
+            if barbearia.longitude is not None
+            else None
+        ),
         permitir_agendamento_portal=agendamento_online_habilitado(
             db,
             barbearia.id,
