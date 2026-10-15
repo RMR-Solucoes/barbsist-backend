@@ -1,6 +1,6 @@
 from math import asin, cos, radians, sin, sqrt
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -35,6 +35,28 @@ class BuscaBarbeariasProximasResponse(BaseModel):
     raio_km: float
     total: int
     barbearias: list[BarbeariaPublicaProxima]
+
+
+class ServicoPublicoPerfil(BaseModel):
+    nome: str
+    preco: float
+    tempo_medio_minutos: int
+
+
+class BarbeariaPublicaPerfil(BaseModel):
+    slug: str
+    nome: str
+    endereco: str | None = None
+    cidade: str | None = None
+    estado: str | None = None
+    cep: str | None = None
+    telefone_whatsapp: str | None = None
+    instagram: str | None = None
+    logo_url: str | None = None
+    slogan: str | None = None
+    imagem_capa_url: str | None = None
+    permitir_agendamento_portal: bool
+    servicos: list[ServicoPublicoPerfil]
 
 
 def calcular_distancia_km(
@@ -160,4 +182,67 @@ def listar_barbearias_proximas(
         raio_km=raio_km,
         total=len(barbearias),
         barbearias=barbearias,
+    )
+
+
+@router.get(
+    "/barbearias/{slug}",
+    response_model=BarbeariaPublicaPerfil,
+)
+def consultar_perfil_publico_barbearia(
+    slug: str,
+    db: Session = Depends(get_db),
+):
+    barbearia = (
+        db.query(models.Barbearia)
+        .filter(
+            models.Barbearia.slug == slug,
+            models.Barbearia.ativa.is_(True),
+            models.Barbearia.catalogo_publico_ativo.is_(True),
+        )
+        .first()
+    )
+
+    if not barbearia:
+        raise HTTPException(
+            status_code=404,
+            detail="Barbearia não encontrada.",
+        )
+
+    servicos = (
+        db.query(models.Servico)
+        .filter(
+            models.Servico.barbearia_id == barbearia.id,
+            models.Servico.ativo.is_(True),
+        )
+        .order_by(models.Servico.nome.asc())
+        .all()
+    )
+
+    return BarbeariaPublicaPerfil(
+        slug=barbearia.slug,
+        nome=barbearia.nome,
+        endereco=barbearia.endereco,
+        cidade=barbearia.cidade,
+        estado=barbearia.estado,
+        cep=barbearia.cep,
+        telefone_whatsapp=barbearia.telefone_whatsapp,
+        instagram=barbearia.instagram,
+        logo_url=barbearia.logo_url,
+        slogan=barbearia.slogan,
+        imagem_capa_url=barbearia.imagem_capa_url,
+        permitir_agendamento_portal=agendamento_online_habilitado(
+            db,
+            barbearia.id,
+        ),
+        servicos=[
+            ServicoPublicoPerfil(
+                nome=servico.nome,
+                preco=float(servico.preco or 0),
+                tempo_medio_minutos=int(
+                    servico.tempo_medio_minutos or 30
+                ),
+            )
+            for servico in servicos
+        ],
     )
