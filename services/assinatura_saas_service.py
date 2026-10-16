@@ -1764,6 +1764,21 @@ def _ativar_assinatura_por_pagamento(
     ass.liberado_manual = False
     ass.motivo_bloqueio = None
 
+    # A primeira contratacao paga encerra
+    # definitivamente o direito do teste gratuito.
+    # Sem commit proprio: participa da mesma
+    # transacao da ativacao/renovacao SaaS.
+    from services.teste_gratuito_saas_service import (
+        converter_teste_gratuito_por_assinatura_sem_commit,
+    )
+
+    converter_teste_gratuito_por_assinatura_sem_commit(
+        db,
+        barbearia_id=ass.barbearia_id,
+        assinatura_id=ass.id,
+        agora=agora,
+    )
+
     # V474_C42B_GRAVAR_CICLO_PAGAMENTO
     #
     # O pagamento normal financia exatamente o intervalo

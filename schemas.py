@@ -566,8 +566,12 @@ class SuperadminContextoTokenResponse(TokenResponse):
 class CadastroBarbeariaRequest(BaseModel):
     nome_barbearia: str
     responsavel: str
+    tipo_documento: str
+    documento: str
     email: str
     telefone_whatsapp: str
+    endereco: str
+    cep: str
     cidade: str
     estado: str
     senha: str
@@ -591,12 +595,21 @@ class CadastroAdministradorResponse(BaseModel):
     email: str
 
 
+class CadastroTesteGratuitoResponse(BaseModel):
+    concedido: bool
+    codigo: str
+    mensagem: str
+    data_inicio: str | None = None
+    data_fim: str | None = None
+
+
 class CadastroBarbeariaResponse(BaseModel):
     sucesso: bool
     mensagem: str
     barbearia: CadastroBarbeariaInfoResponse
     administrador: CadastroAdministradorResponse
     login: CadastroBarbeariaLoginResponse
+    teste_gratuito: CadastroTesteGratuitoResponse
     proximo_passo: str
 # =========================
 # ESTILOS DE CORTE / BARBA
@@ -1193,6 +1206,19 @@ class ConcederTesteSaaSRequest(BaseModel):
     observacao: str = Field(min_length=3, max_length=500)
     autorizar_excecao: bool = False
     confirmacao: Optional[str] = Field(default=None, max_length=80)
+
+
+
+class ConcederExcecaoTesteGratuitoSaaSRequest(BaseModel):
+    tipo_documento: Literal["CPF", "CNPJ"]
+    documento: str = Field(
+        min_length=11,
+        max_length=18,
+    )
+    motivo: str = Field(
+        min_length=3,
+        max_length=500,
+    )
 
 
 class BloquearAssinaturaSaaSRequest(BaseModel):

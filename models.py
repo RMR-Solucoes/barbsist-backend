@@ -2118,3 +2118,241 @@ if not hasattr(Agendamento, "servicos_ids"):
 
 # BARBSIST_MULTI_SERVICE_M1_END
 # ============================================================================
+
+
+# ============================================================
+# TESTE GRATUITO SAAS
+# Independente de plano/assinatura comercial.
+# ============================================================
+class TesteGratuitoSaaS(Base):
+    __tablename__ = "testes_gratuitos_saas"
+    __table_args__ = (
+        UniqueConstraint(
+            "barbearia_id",
+            name="uq_teste_gratuito_saas_barbearia",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    # Pode ficar NULL caso a barbearia seja removida fisicamente.
+    # O barbearia_id_original preserva o histórico antifraude.
+    barbearia_id = Column(
+        Integer,
+        ForeignKey("barbearias.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    barbearia_id_original = Column(
+        Integer,
+        nullable=False,
+        index=True,
+    )
+
+    tipo_documento = Column(
+        String,
+        nullable=True,
+    )
+
+    # Nunca armazenar CPF no fingerprint.
+    # O valor será HMAC-SHA256 com segredo da aplicação.
+    documento_fingerprint = Column(
+        String,
+        nullable=True,
+        index=True,
+    )
+
+    endereco_fingerprint = Column(
+        String,
+        nullable=True,
+        index=True,
+    )
+
+    fingerprint_version = Column(
+        String,
+        nullable=False,
+        default="HMAC_SHA256_V1",
+        index=True,
+    )
+
+    data_inicio = Column(
+        DateTime,
+        nullable=False,
+    )
+    data_fim = Column(
+        DateTime,
+        nullable=False,
+    )
+
+    # Ciclo do beneficio gratuito.
+    #
+    # ATIVO:
+    # ainda pode conceder teste/carencia pelas datas.
+    #
+    # CONVERTIDO:
+    # houve contratacao SaaS paga e o teste nunca
+    # deve voltar a conceder acesso.
+    #
+    # REVOGADO:
+    # reservado para bloqueio administrativo futuro.
+    status = Column(
+        String,
+        nullable=False,
+        default="ATIVO",
+        index=True,
+    )
+
+    convertido_em = Column(
+        DateTime,
+        nullable=True,
+    )
+
+    assinatura_convertida_id = Column(
+        Integer,
+        ForeignKey(
+            "assinaturas_saas.id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+        index=True,
+    )
+
+    liberacao_manual = Column(
+        Boolean,
+        nullable=False,
+        default=False,
+    )
+    motivo_liberacao = Column(
+        String,
+        nullable=True,
+    )
+
+    liberado_por_usuario_id = Column(
+        Integer,
+        ForeignKey(
+            "usuarios.id",
+            ondelete="RESTRICT",
+        ),
+        nullable=True,
+        index=True,
+    )
+
+    liberado_em = Column(
+        DateTime,
+        nullable=True,
+    )
+
+    liberacao_conflito_codigo = Column(
+        String,
+        nullable=True,
+        index=True,
+    )
+
+    liberacao_claim_id = Column(
+        Integer,
+        nullable=True,
+        index=True,
+    )
+
+    origem = Column(
+        String,
+        nullable=False,
+        default="CADASTRO_PUBLICO",
+    )
+
+    criado_em = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.now,
+    )
+    atualizado_em = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.now,
+        onupdate=datetime.now,
+    )
+
+
+class TesteGratuitoSaaSClaim(Base):
+    """
+    Reserva permanente de identidade usada
+    para concessao do teste gratuito.
+
+    O claim nao representa o beneficio.
+    Ele apenas registra que determinada
+    identidade ja consumiu o direito
+    automatico ao teste.
+    """
+
+    __tablename__ = "teste_gratuito_saas_claims"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tipo_chave",
+            "fingerprint_version",
+            "chave_fingerprint",
+            name="uq_teste_gratuito_claim_chave",
+        ),
+    )
+
+    id = Column(
+        Integer,
+        primary_key=True,
+        index=True,
+    )
+
+    tipo_chave = Column(
+        String,
+        nullable=False,
+        index=True,
+    )
+
+    # CPF ou CNPJ quando tipo_chave=DOCUMENTO.
+    # Para ENDERECO permanece NULL.
+    subtipo_documento = Column(
+        String,
+        nullable=True,
+    )
+
+    chave_fingerprint = Column(
+        String,
+        nullable=False,
+        index=True,
+    )
+
+    fingerprint_version = Column(
+        String,
+        nullable=False,
+        default="HMAC_SHA256_V1",
+        index=True,
+    )
+
+    teste_id = Column(
+        Integer,
+        ForeignKey(
+            "testes_gratuitos_saas.id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+        index=True,
+    )
+
+    # Preserva a origem historica mesmo
+    # se registros operacionais forem removidos.
+    barbearia_id_original = Column(
+        Integer,
+        nullable=False,
+        index=True,
+    )
+
+    origem = Column(
+        String,
+        nullable=False,
+        default="CADASTRO_PUBLICO",
+    )
+
+    criado_em = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.now,
+    )

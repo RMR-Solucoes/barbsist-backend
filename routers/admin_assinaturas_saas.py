@@ -1,5 +1,8 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
+import models
 
 from auth.permissions import superadmin
 from database import get_db
@@ -7,6 +10,8 @@ from schemas import (
     AssinaturaSaaSResponse,
     AssinaturaSaaSAuditoriaResponse,
     BloquearAssinaturaSaaSRequest,
+    CadastroTesteGratuitoResponse,
+    ConcederExcecaoTesteGratuitoSaaSRequest,
     ConcederTesteSaaSRequest,
     LiberarAssinaturaSaaSRequest,
     PagamentoSaaSResponse,
@@ -25,6 +30,12 @@ from services.assinatura_saas_service import (
     listar_pagamentos_admin_service,
     listar_planos_saas_service,
     status_mercado_pago_barbsist_service,
+)
+
+from services.teste_gratuito_saas_service import (
+    criar_teste_gratuito_sem_commit,
+    normalizar_documento,
+    normalizar_tipo_documento,
 )
 
 router = APIRouter(prefix="/admin/barbsist-assinaturas", tags=["Admin - BarbSist Assinaturas"])
@@ -59,6 +70,213 @@ def conceder_teste(
     return conceder_teste_saas_service(
         db, barbearia_id, dados, usuario_logado
     )
+
+# Novo modelo de teste gratuito:
+# separado de AssinaturaSaaS e sem plano.
+@router.post(
+    "/barbearias/{barbearia_id}/teste-gratuito/excecao",
+    response_model=CadastroTesteGratuitoResponse,
+)
+def conceder_excecao_teste_gratuito(
+    barbearia_id: int,
+    dados: ConcederExcecaoTesteGratuitoSaaSRequest,
+    db: Session = Depends(get_db),
+    usuario_logado=Depends(superadmin),
+):
+    try:
+        barbearia = (
+            db.query(models.Barbearia)
+            .filter(
+                models.Barbearia.id
+                == int(barbearia_id)
+            )
+            .with_for_update()
+            .first()
+        )
+
+        if barbearia is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Barbearia n?o encontrada.",
+            )
+
+        tipo_documento = (
+            normalizar_tipo_documento(
+                dados.tipo_documento
+            )
+        )
+
+        documento = normalizar_documento(
+            tipo_documento,
+            dados.documento,
+        )
+
+        cnpj_cadastrado = str(
+            barbearia.cnpj or ""
+        ).strip()
+
+        if cnpj_cadastrado:
+            if tipo_documento != "CNPJ":
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Esta barbearia possui CNPJ "
+                        "cadastrado. A exce??o deve "
+                        "utilizar o CNPJ."
+                    ),
+                )
+
+            cnpj_normalizado = (
+                normalizar_documento(
+                    "CNPJ",
+                    cnpj_cadastrado,
+                )
+            )
+
+            if documento != cnpj_normalizado:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "O CNPJ informado n?o "
+                        "corresponde ao CNPJ "
+                        "cadastrado da barbearia."
+                    ),
+                )
+
+        elif tipo_documento != "CPF":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Barbearia sem CNPJ deve "
+                    "utilizar o CPF do respons?vel."
+                ),
+            )
+
+        endereco = str(
+            barbearia.endereco or ""
+        ).strip()
+
+        cidade = str(
+            barbearia.cidade or ""
+        ).strip()
+
+        estado = str(
+            barbearia.estado or ""
+        ).strip()
+
+        cep = str(
+            barbearia.cep or ""
+        ).strip()
+
+        if not all(
+            (
+                endereco,
+                cidade,
+                estado,
+                cep,
+            )
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Complete endere?o, CEP, "
+                    "cidade e estado da barbearia "
+                    "antes de conceder a exce??o."
+                ),
+            )
+
+        teste, resultado = (
+            criar_teste_gratuito_sem_commit(
+                db,
+                barbearia_id=barbearia.id,
+                tipo_documento=tipo_documento,
+                documento=documento,
+                endereco=endereco,
+                cidade=cidade,
+                estado=estado,
+                cep=cep,
+                autorizar_excecao=True,
+                motivo_liberacao=dados.motivo,
+                autorizado_por_usuario_id=(
+                    usuario_logado.id
+                ),
+                origem="SUPERADMIN_EXCECAO",
+            )
+        )
+
+        if teste is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "codigo": resultado.codigo,
+                    "mensagem": resultado.mensagem,
+                },
+            )
+
+        db.commit()
+        db.refresh(teste)
+
+        return {
+            "concedido": True,
+            "codigo": (
+                "EXCECAO_TESTE_GRATUITO_CONCEDIDA"
+            ),
+            "mensagem": (
+                "Teste gratuito concedido por "
+                "exce??o administrativa."
+            ),
+            "data_inicio": (
+                teste.data_inicio.isoformat()
+                if teste.data_inicio
+                else None
+            ),
+            "data_fim": (
+                teste.data_fim.isoformat()
+                if teste.data_fim
+                else None
+            ),
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+
+    except ValueError as exc:
+        db.rollback()
+
+        detalhe = str(exc)
+
+        codigo = (
+            409
+            if "ja possui" in detalhe.lower()
+            else 400
+        )
+
+        raise HTTPException(
+            status_code=codigo,
+            detail=detalhe,
+        ) from exc
+
+    except RuntimeError as exc:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+        ) from exc
+
+    except IntegrityError as exc:
+        db.rollback()
+
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "N?o foi poss?vel conceder o "
+                "teste porque existe um registro "
+                "antifraude conflitante."
+            ),
+        ) from exc
+
 
 @router.get("/pagamentos", response_model=list[PagamentoSaaSResponse])
 def pagamentos(db: Session = Depends(get_db), usuario_logado=Depends(superadmin)):
