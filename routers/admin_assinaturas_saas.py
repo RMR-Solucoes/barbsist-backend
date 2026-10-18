@@ -97,7 +97,7 @@ def conceder_excecao_teste_gratuito(
         if barbearia is None:
             raise HTTPException(
                 status_code=404,
-                detail="Barbearia n?o encontrada.",
+                detail="Barbearia n\u00e3o encontrada.",
             )
 
         tipo_documento = (
@@ -121,7 +121,7 @@ def conceder_excecao_teste_gratuito(
                     status_code=400,
                     detail=(
                         "Esta barbearia possui CNPJ "
-                        "cadastrado. A exce??o deve "
+                        "cadastrado. A exce\u00e7\u00e3o deve "
                         "utilizar o CNPJ."
                     ),
                 )
@@ -137,7 +137,7 @@ def conceder_excecao_teste_gratuito(
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        "O CNPJ informado n?o "
+                        "O CNPJ informado n\u00e3o "
                         "corresponde ao CNPJ "
                         "cadastrado da barbearia."
                     ),
@@ -148,7 +148,7 @@ def conceder_excecao_teste_gratuito(
                 status_code=400,
                 detail=(
                     "Barbearia sem CNPJ deve "
-                    "utilizar o CPF do respons?vel."
+                    "utilizar o CPF do respons\u00e1vel."
                 ),
             )
 
@@ -179,9 +179,9 @@ def conceder_excecao_teste_gratuito(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Complete endere?o, CEP, "
+                    "Complete endere\u00e7o, CEP, "
                     "cidade e estado da barbearia "
-                    "antes de conceder a exce??o."
+                    "antes de conceder a exce\u00e7\u00e3o."
                 ),
             )
 
@@ -223,7 +223,7 @@ def conceder_excecao_teste_gratuito(
             ),
             "mensagem": (
                 "Teste gratuito concedido por "
-                "exce??o administrativa."
+                "exce\u00e7\u00e3o administrativa."
             ),
             "data_inicio": (
                 teste.data_inicio.isoformat()
@@ -271,7 +271,7 @@ def conceder_excecao_teste_gratuito(
         raise HTTPException(
             status_code=409,
             detail=(
-                "N?o foi poss?vel conceder o "
+                "N\u00e3o foi poss\u00edvel conceder o "
                 "teste porque existe um registro "
                 "antifraude conflitante."
             ),

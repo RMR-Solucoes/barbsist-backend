@@ -588,20 +588,20 @@ def criar_teste_gratuito_sem_commit(
 
         if resultado.elegivel:
             raise ValueError(
-                "Nao existe conflito antifraude "
-                "que justifique excecao manual."
+                "N\u00e3o existe conflito antifraude "
+                "que justifique exce\u00e7\u00e3o manual."
             )
 
         if len(motivo_normalizado) < 3:
             raise ValueError(
                 "Informe a justificativa da "
-                "excecao manual."
+                "exce\u00e7\u00e3o manual."
             )
 
         if autorizado_por_usuario_id is None:
             raise ValueError(
-                "Informe o SuperAdmin responsavel "
-                "pela excecao."
+                "Informe o SuperAdmin respons\u00e1vel "
+                "pela exce\u00e7\u00e3o."
             )
 
         usuario_autorizador = (
@@ -625,7 +625,7 @@ def criar_teste_gratuito_sem_commit(
             != "superadmin"
         ):
             raise ValueError(
-                "A excecao deve ser autorizada "
+                "A exce\u00e7\u00e3o deve ser autorizada "
                 "por um SuperAdmin ativo."
             )
 
