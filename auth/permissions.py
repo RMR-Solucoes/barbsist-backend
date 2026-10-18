@@ -1,39 +1,74 @@
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 
 from auth.security import obter_usuario_logado
-from auth.tenant import superadmin_possui_contexto
+from auth.tenant import (
+    obter_barbearia_id,
+    superadmin_possui_contexto,
+)
+from database import get_db
+from services.autorizacao_operacional_saas_service import (
+    validar_operacao_interna_saas,
+)
 
 
 def permitir_perfis(perfis_permitidos: list[str]):
-    def verificar(usuario=Depends(obter_usuario_logado)):
-
+    def verificar(
+        request: Request,
+        db=Depends(get_db),
+        usuario=Depends(obter_usuario_logado),
+    ):
         if usuario is None:
             raise HTTPException(
                 status_code=401,
-                detail="Usuário não autenticado"
+                detail="Usu\u00e1rio n\u00e3o autenticado",
             )
 
-        if usuario.perfil in perfis_permitidos:
-            return usuario
-
-        # Um superadmin somente assume permissões administrativas
-        # de uma barbearia quando existe contexto explícito e a rota
-        # já permite o perfil "admin".
-        if (
-            usuario.perfil == "superadmin"
-            and "admin" in perfis_permitidos
-            and superadmin_possui_contexto(usuario)
-        ):
-            return usuario
-
-        raise HTTPException(
-            status_code=403,
-            detail="Acesso não autorizado para este perfil"
+        autorizado = (
+            usuario.perfil
+            in perfis_permitidos
         )
 
+        # O superadmin somente assume permissoes
+        # administrativas de uma barbearia quando
+        # existe contexto explicito e a rota ja
+        # permite o perfil admin.
+        if (
+            not autorizado
+            and usuario.perfil == "superadmin"
+            and "admin" in perfis_permitidos
+            and superadmin_possui_contexto(
+                usuario
+            )
+        ):
+            autorizado = True
+
+        if not autorizado:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Acesso n\u00e3o autorizado "
+                    "para este perfil"
+                ),
+            )
+
+        # Superadmin permanece livre para suporte,
+        # administracao e regularizacao.
+        if usuario.perfil != "superadmin":
+            barbearia_id = (
+                obter_barbearia_id(
+                    usuario
+                )
+            )
+
+            validar_operacao_interna_saas(
+                db=db,
+                barbearia_id=barbearia_id,
+                request=request,
+            )
+
+        return usuario
+
     return verificar
-
-
 # =========================
 # ADMINISTRAÇÃO DA PLATAFORMA
 # =========================
