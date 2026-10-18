@@ -18,6 +18,9 @@ from services.barbearia_service import (
 from services.configuracao_funcionamento_service import (
     criar_configuracao_padrao_por_barbearia,
 )
+from services.geocodificacao_service import (
+    geocodificar_endereco_barbearia,
+)
 from services.sequencia_service import PREFIXOS_CODIGO
 from services.teste_gratuito_saas_service import (
     criar_teste_gratuito_sem_commit,
@@ -266,6 +269,31 @@ def cadastrar_barbearia_service(
                 "documento"
             ]
 
+        # Cadastro publico:
+        # coordenadas derivam exclusivamente
+        # do endereco comercial informado.
+        #
+        # Erros de validacao do endereco continuam
+        # bloqueando o cadastro.
+        #
+        # Falhas temporarias dos servicos externos
+        # nao devem impedir a criacao da conta.
+        try:
+            resultado_geocodificacao = (
+                geocodificar_endereco_barbearia(
+                    dados
+                )
+            )
+        except HTTPException as exc:
+            if exc.status_code not in {
+                502,
+                503,
+                504,
+            }:
+                raise
+
+            resultado_geocodificacao = None
+
         barbearia = models.Barbearia(
             codigo=codigo,
             slug=slug,
@@ -299,6 +327,32 @@ def cadastrar_barbearia_service(
             cep=dados_validados[
                 "cep"
             ],
+            latitude=(
+                resultado_geocodificacao[
+                    "latitude"
+                ]
+                if resultado_geocodificacao
+                is not None
+                else None
+            ),
+            longitude=(
+                resultado_geocodificacao[
+                    "longitude"
+                ]
+                if resultado_geocodificacao
+                is not None
+                else None
+            ),
+            catalogo_publico_ativo=(
+                bool(
+                    resultado_geocodificacao[
+                        "catalogo_permitido"
+                    ]
+                )
+                if resultado_geocodificacao
+                is not None
+                else False
+            ),
             ativa=True,
         )
 
