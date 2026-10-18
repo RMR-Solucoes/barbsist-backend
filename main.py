@@ -88,6 +88,8 @@ app.add_middleware(
         "http://localhost:3001",
         "http://127.0.0.1:3001",
         "https://barbsist-frontend.vercel.app",
+        "https://barbsist.com.br",
+        "https://www.barbsist.com.br",
         "https://barbsist-frontend-dkpauelg2-aulaipros-projects.vercel.app",
     ],
     allow_origin_regex=(
