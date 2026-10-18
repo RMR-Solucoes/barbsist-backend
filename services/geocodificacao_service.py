@@ -49,20 +49,103 @@ def _normalizar_cep(valor):
 def _separar_logradouro_numero(endereco):
     texto = _texto(endereco)
 
+    if not texto:
+        return "", ""
+
+    # Normaliza variantes de travessao apenas
+    # para interpretar o endereco.
+    # O valor original salvo pelo usuario nao e alterado.
+    texto_parse = (
+        texto
+        .replace("\u2013", "-")
+        .replace("\u2014", "-")
+        .replace("\u2212", "-")
+    )
+
+    # Formatos explicitos:
+    #
+    # Rua X, 123
+    # Rua X, 123, Bairro
+    # Rua X, 123 - Bairro
+    # Rua X, 123 com separador de bairro
+    # Rua X, 123 com separador de bairro
     correspondencia = re.match(
         r"^(?P<rua>.*?\S)\s*,?\s+"
         r"(?P<numero>\d+[A-Za-z0-9\-\/]*)"
         r"(?:\s*[-,]\s*.*)?$",
-        texto,
+        texto_parse,
     )
 
-    if not correspondencia:
-        return texto, ""
+    if correspondencia:
+        return (
+            _texto(
+                correspondencia.group("rua")
+            ),
+            _texto(
+                correspondencia.group("numero")
+            ),
+        )
 
-    return (
-        _texto(correspondencia.group("rua")),
-        _texto(correspondencia.group("numero")),
-    )
+    # Fallback para endereco digitado
+    # somente com espacos:
+    #
+    # Rua Baruel 501 Jardim Paulista
+    #
+    # Percorre os numeros da esquerda para
+    # a direita e evita assumir que numeros
+    # integrantes do nome da rua sejam o
+    # numero do imovel.
+    candidatos = []
+
+    for candidato in re.finditer(
+        r"(?<!\w)"
+        r"(?P<numero>\d+[A-Za-z0-9\-\/]*)"
+        r"(?!\w)",
+        texto_parse,
+    ):
+        rua = _texto(
+            texto_parse[
+                :candidato.start()
+            ]
+        ).strip(" ,-")
+
+        if not rua:
+            continue
+
+        if not any(
+            caractere.isalpha()
+            for caractere in rua
+        ):
+            continue
+
+        numero = _texto(
+            candidato.group("numero")
+        )
+
+        candidatos.append(
+            (
+                rua,
+                numero,
+            )
+        )
+
+        # Ex.:
+        # Rua Baruel 501
+        # Avenida Brasil 100
+        #
+        # Para "Rua 15 de Novembro 501",
+        # o candidato 15 possui apenas
+        # "Rua" antes dele e sera ignorado.
+        if len(rua.split()) >= 2:
+            return (
+                rua,
+                numero,
+            )
+
+    if candidatos:
+        return candidatos[-1]
+
+    return texto, ""
 
 
 def _compativel(informado, retornado, limite=0.72):
