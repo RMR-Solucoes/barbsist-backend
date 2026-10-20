@@ -286,6 +286,7 @@ def cadastrar_barbearia_service(
             )
         except HTTPException as exc:
             if exc.status_code not in {
+                424,
                 502,
                 503,
                 504,
