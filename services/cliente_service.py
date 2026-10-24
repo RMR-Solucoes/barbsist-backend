@@ -121,38 +121,21 @@ def validar_duplicidade_cliente(
     email: str | None,
     cliente_id_ignorado: int | None = None
 ):
+    """Impede duplicidade dentro da mesma barbearia.
+
+    Reconhece telefones brasileiros equivalentes com ou sem DDI 55.
+    Mantem a regra existente de comparacao exata de e-mail.
+    Nao modifica cadastros antigos.
     """
-    Verifica duplicidade de telefone ou e-mail somente
-    dentro da barbearia atual.
+    from services.telefone_brasil import telefones_equivalentes
 
-    Clientes de barbearias diferentes podem possuir
-    o mesmo telefone ou e-mail.
-    """
+    barbearia_id = obter_barbearia_id(usuario_logado)
 
-    barbearia_id = obter_barbearia_id(
-        usuario_logado
-    )
-
-    criterios = []
-
-    if telefone:
-        criterios.append(
-            models.Cliente.telefone == telefone
-        )
-
-    if email:
-        criterios.append(
-            models.Cliente.email == email
-        )
-
-    if not criterios:
+    if not telefone and not email:
         return
 
-    query = db.query(
-        models.Cliente
-    ).filter(
-        models.Cliente.barbearia_id == barbearia_id,
-        or_(*criterios)
+    query = db.query(models.Cliente).filter(
+        models.Cliente.barbearia_id == barbearia_id
     )
 
     if cliente_id_ignorado is not None:
@@ -160,34 +143,37 @@ def validar_duplicidade_cliente(
             models.Cliente.id != cliente_id_ignorado
         )
 
-    cliente_existente = query.first()
+    # Comparacao restrita a esta barbearia.
+    # Suporta cadastros legados gravados em formatos diferentes.
+    clientes = query.all()
 
-    if not cliente_existente:
-        return
+    if telefone:
+        for cliente_existente in clientes:
+            if (
+                cliente_existente.telefone == telefone
+                or telefones_equivalentes(
+                    cliente_existente.telefone,
+                    telefone
+                )
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "Ja existe um cliente com este telefone "
+                        "nesta barbearia."
+                    )
+                )
 
-    if (
-        telefone
-        and cliente_existente.telefone == telefone
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Já existe um cliente com este telefone "
-                "nesta barbearia."
-            )
-        )
-
-    if (
-        email
-        and cliente_existente.email == email
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Já existe um cliente com este e-mail "
-                "nesta barbearia."
-            )
-        )
+    if email:
+        for cliente_existente in clientes:
+            if cliente_existente.email == email:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "Ja existe um cliente com este e-mail "
+                        "nesta barbearia."
+                    )
+                )
 
 
 def criar_cliente_service(

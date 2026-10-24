@@ -513,6 +513,26 @@ def criar_agendamento_service(db, dados, usuario_logado):
                 )
             )
 
+        # F2.3E: evento transacional, desativado ate migracao homologada.
+        import os
+
+        notificacoes_ativas = os.getenv(
+            "BARBSIST_NOTIFICACOES_AGENDA_ATIVAS", ""
+        ).strip().lower() in ("1", "true", "sim")
+
+        if notificacoes_ativas:
+            from notificacoes.servico import registrar_notificacao
+
+            registrar_notificacao(
+                db,
+                barbearia_id=barbearia_id,
+                agendamento_id=agendamento.id,
+                chave_evento=f"agendamento:{agendamento.id}:criado",
+                tipo="AGENDAMENTO_CRIADO",
+                titulo="Novo agendamento",
+                mensagem="Um novo agendamento foi registrado na agenda.",
+            )
+
         db.commit()
         db.refresh(agendamento)
 

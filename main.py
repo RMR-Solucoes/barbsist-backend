@@ -150,3 +150,14 @@ app.include_router(financeiro_plataforma.router)
 app.include_router(parceiros_router)
 app.include_router(portal_parceiro_router)
 app.include_router(portal_cliente_router)
+
+# F2.3J - API de notificacoes.
+# Desativada por padrao ate migracao e homologacao HTTP.
+import os as _barbsist_notificacoes_os
+
+if _barbsist_notificacoes_os.getenv(
+    "BARBSIST_NOTIFICACOES_API_ATIVA", ""
+).strip().lower() in ("1", "true", "sim"):
+    from notificacoes.router import router as _notificacoes_router
+
+    app.include_router(_notificacoes_router)

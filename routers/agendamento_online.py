@@ -759,13 +759,17 @@ def cancelar_agendamento_online(
 
 
 def normalizar_telefone(telefone: str) -> str:
-    telefone_limpo = re.sub(r"\D", "", telefone or "")
-    if telefone_limpo and len(telefone_limpo) not in (10, 11):
+    from services.telefone_brasil import telefone_nacional
+
+    numero = telefone_nacional(telefone)
+
+    if not numero and str(telefone or "").strip():
         raise HTTPException(
             status_code=400,
-            detail="Telefone inválido. Informe DDD + número.",
+            detail="Telefone invalido. Informe DDD + numero, com ou sem +55.",
         )
-    return telefone_limpo
+
+    return numero or ""
 
 
 def buscar_cliente_por_telefone(
@@ -783,11 +787,13 @@ def buscar_cliente_por_telefone(
         .all()
     )
 
+    from services.telefone_brasil import telefones_equivalentes
+
     return next(
         (
             cliente
             for cliente in clientes
-            if normalizar_telefone(cliente.telefone) == telefone_limpo
+            if telefones_equivalentes(cliente.telefone, telefone_limpo)
         ),
         None,
     )
