@@ -120,33 +120,23 @@ def migrar_usuario_superadmin():
 
 
 def criar_saas():
-    Base.metadata.create_all(bind=engine)
-    db = SessionLocal()
-    try:
-        if db.query(models.PlanoSaaS).count() == 0:
-            db.add_all([
-                models.PlanoSaaS(
-                    nome="Mensal", descricao="Plano mensal BarbSist",
-                    periodo_meses=1, valor_pix=0.01, valor_cartao=0.01,
-                    max_parcelas_cartao=1, ativo=True,
-                ),
-                models.PlanoSaaS(
-                    nome="Semestral", descricao="Plano semestral BarbSist",
-                    periodo_meses=6, valor_pix=0.01, valor_cartao=0.01,
-                    max_parcelas_cartao=6, ativo=True,
-                ),
-                models.PlanoSaaS(
-                    nome="Anual", descricao="Plano anual BarbSist",
-                    periodo_meses=12, valor_pix=0.01, valor_cartao=0.01,
-                    max_parcelas_cartao=12, ativo=True,
-                ),
-            ])
-            db.commit()
-            print("[OK] Planos SaaS de homologação criados a R$ 0,01.")
-        else:
-            print("[OK] Planos SaaS já existem; nada duplicado.")
-    finally:
-        db.close()
+    """Pré-deploy recorrente: confere a fundação SaaS; não cria tabelas ou planos.
+
+    A criação inicial de tabelas e planos exige migração explícita/homologada.
+    """
+    exigidas = {
+        models.PlanoSaaS.__tablename__,
+        models.AssinaturaSaaS.__tablename__,
+        models.PagamentoSaaS.__tablename__,
+    }
+    encontradas = set(inspect(engine).get_table_names())
+    faltantes = sorted(exigidas - encontradas)
+    if faltantes:
+        raise RuntimeError(
+            "SCHEMA_SAAS_INCOMPLETO: " + ", ".join(faltantes)
+            + ". Aplique apenas migrações explícitas homologadas."
+        )
+    print("[OK] Tabelas SaaS existentes; sem criação genérica ou planos de teste.")
 
 
 if __name__ == "__main__":

@@ -29,31 +29,23 @@ def executar():
         )
 
         if usuario:
-            usuario.nome = NOME
-            usuario.senha_hash = criar_hash_senha(SENHA)
-            usuario.perfil = "superadmin"
-            usuario.barbeiro_id = None
-            usuario.ativo = True
-            usuario.barbearia_id = None
-            print("[OK] Superadmin global atualizado.")
-        else:
-            usuario = models.Usuario(
-                nome=NOME,
-                email=EMAIL,
-                senha_hash=criar_hash_senha(SENHA),
-                perfil="superadmin",
-                barbeiro_id=None,
-                ativo=True,
-                barbearia_id=None,
-            )
-            db.add(usuario)
-            print("[OK] Superadmin global criado.")
+            # Protege contas existentes: inclusive senha e perfil.
+            # Bootstrap recorrente NUNCA deve alterar credenciais.
+            print("SUPERADMIN_EXISTENTE_PRESERVADO=SIM")
+            return
 
+        usuario = models.Usuario(
+            nome=NOME,
+            email=EMAIL,
+            senha_hash=criar_hash_senha(SENHA),
+            perfil="superadmin",
+            barbeiro_id=None,
+            ativo=True,
+            barbearia_id=None,
+        )
+        db.add(usuario)
         db.commit()
-        db.refresh(usuario)
-        print(f"[OK] ID do superadmin: {usuario.id}")
-        print(f"[OK] E-mail: {usuario.email}")
-        print("[OK] barbearia_id: NULL (controle global do BarbSist)")
+        print("SUPERADMIN_INICIAL_CRIADO=SIM")
     except Exception:
         db.rollback()
         raise

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from collections import Counter
 
@@ -67,7 +67,7 @@ def main():
             )
             criados += 1
 
-        db.commit()
+        db.flush()  # Sem commit: validacao ainda pode falhar e permitir rollback.
 
         vinculos = (
             db.query(models.AgendamentoServico)
@@ -127,6 +127,7 @@ def main():
                 "Migracao terminou com inconsistencias."
             )
 
+        db.commit()
         print("MIGRACAO_MULTISSERVICO_PRODUCAO=OK")
 
     except Exception:
