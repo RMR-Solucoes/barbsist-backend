@@ -4,7 +4,7 @@ import secrets
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 import models
@@ -172,6 +172,48 @@ def login(dados: PortalLoginRequest, db: Session = Depends(get_db)):
     }), "token_type": "bearer"}
 
 
+# BARBSIST_C3OF2C2B_MEUS_AGENDAMENTOS
+@router.get("/meus-agendamentos")
+def meus_agendamentos(
+    acesso: ClienteAcesso = Depends(obter_acesso_cliente),
+    db: Session = Depends(get_db),
+):
+    """Consulta agendamentos futuros do titular autenticado."""
+    itens = (
+        db.query(models.Agendamento)
+        .filter(
+            models.Agendamento.cliente_id == acesso.cliente_id,
+            models.Agendamento.barbearia_id == acesso.barbearia_id,
+            models.Agendamento.data_hora_inicio >= datetime.now(),
+            func.lower(models.Agendamento.status) != "cancelado",
+        )
+        .order_by(
+            models.Agendamento.data_hora_inicio.asc(),
+            models.Agendamento.id.asc(),
+        )
+        .all()
+    )
+
+    return [
+        {
+            "id": item.id,
+            "barbearia_id": item.barbearia_id,
+            "cliente_id": item.cliente_id,
+            "barbeiro_id": item.barbeiro_id,
+            "servico_id": item.servico_id,
+            "servico": (
+                item.servico.nome if item.servico else None
+            ),
+            "barbeiro": (
+                item.barbeiro.nome if item.barbeiro else None
+            ),
+            "data_hora_inicio": item.data_hora_inicio,
+            "data_hora_fim": item.data_hora_fim,
+            "status": item.status,
+            "tipo_atendimento": item.tipo_atendimento,
+        }
+        for item in itens
+    ]
 @router.get("/me", response_model=PortalMeResponse)
 def me(acesso: ClienteAcesso = Depends(obter_acesso_cliente), db: Session = Depends(get_db)):
     config = _config(db, acesso.barbearia_id); db.commit()
@@ -499,5 +541,48 @@ def obter_configuracao(db: Session = Depends(get_db), usuario=Depends(admin_ou_g
 
 @router.put("/admin/configuracao", response_model=ConfiguracaoPortalResponse)
 def atualizar_configuracao(dados: ConfiguracaoPortalUpdate, db: Session = Depends(get_db), usuario=Depends(admin_ou_gerente)):
-    item = _config(db, obter_barbearia_id(usuario)); item.permitir_agendamento_portal = dados.permitir_agendamento_portal
+    item = _config(db, obter_barbearia_id(usuario))
+    item.permitir_agendamento_portal = dados.permitir_agendamento_portal
+    if dados.agendamento_exige_plano_cliente is not None:
+        item.agendamento_exige_plano_cliente = dados.agendamento_exige_plano_cliente
     db.commit(); db.refresh(item); return item
+
+# BARBSIST_F3C5_A9B3_P1_CANDIDATO_ISOLADO
+@router.get("/saldo-creditos")
+def saldo_creditos_portal(
+    data_atendimento: datetime,
+    acesso: ClienteAcesso = Depends(obter_acesso_cliente),
+    db: Session = Depends(get_db),
+):
+    """Consulta o saldo livre para a data de atendimento escolhida.
+
+    O cliente e a barbearia sao identificados pelo JWT.
+    Nao altera reservas, ciclos, pagamentos ou creditos.
+    """
+    from services.saldo_portal_cliente import (
+        calcular_saldo_portal_candidato,
+    )
+
+    assinatura = (
+        db.query(models.AssinaturaCliente)
+        .filter(
+            models.AssinaturaCliente.barbearia_id
+            == acesso.barbearia_id,
+            models.AssinaturaCliente.cliente_id
+            == acesso.cliente_id,
+        )
+        .order_by(models.AssinaturaCliente.id.desc())
+        .first()
+    )
+
+    if assinatura is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Nenhuma assinatura encontrada para este cliente.",
+        )
+
+    return calcular_saldo_portal_candidato(
+        db,
+        assinatura=assinatura,
+        data_atendimento=data_atendimento,
+    )

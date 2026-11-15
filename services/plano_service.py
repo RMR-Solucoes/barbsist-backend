@@ -1,11 +1,14 @@
 from datetime import datetime, timedelta
 import calendar
 import math
+import logging
 
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
 
 import models
+
+logger = logging.getLogger(__name__)
 
 from auth.tenant import (
     buscar_da_barbearia,
@@ -240,7 +243,7 @@ def atualizar_status_assinatura(assinatura):
     return assinatura
 
 
-def _atualizar_status_em_lista(db, assinaturas):
+def _atualizar_status_em_lista(db, assinaturas, persistir=True):
     houve_alteracao = False
 
     for assinatura in assinaturas:
@@ -255,7 +258,7 @@ def _atualizar_status_em_lista(db, assinaturas):
         ):
             houve_alteracao = True
 
-    if houve_alteracao:
+    if houve_alteracao and persistir:
         db.commit()
 
     return assinaturas
@@ -556,12 +559,13 @@ def atualizar_plano_service(
     except HTTPException:
         db.rollback()
         raise
-    except Exception as erro:
+    except Exception:
         db.rollback()
+        logger.exception("Falha interna ao atualizar plano")
         raise HTTPException(
             status_code=500,
-            detail=f"Erro ao atualizar plano: {str(erro)}",
-        )
+            detail="N?o foi poss?vel atualizar o plano.",
+        ) from None
 
 
 # =========================
@@ -685,7 +689,7 @@ def listar_assinaturas_service(
         .all()
     )
 
-    return _atualizar_status_em_lista(db, assinaturas)
+    return _atualizar_status_em_lista(db, assinaturas, persistir=False)
 
 
 def buscar_assinaturas_cliente_service(
@@ -877,7 +881,7 @@ def usar_plano_service(
                 models.AssinaturaCliente.id == dados.assinatura_id,
                 models.AssinaturaCliente.barbearia_id == barbearia_id,
             )
-            .with_for_update()
+            .with_for_update(of=models.AssinaturaCliente)
             .first()
         )
 
@@ -955,6 +959,68 @@ def usar_plano_service(
                 detail="Serviço não encontrado ou inativo.",
             )
 
+        # BARBSIST_P9_4L_ITEM_CONSUMO
+        item_comanda_id = getattr(dados, "item_comanda_id", None)
+        if item_comanda_id is not None:
+            if (
+                not isinstance(item_comanda_id, int)
+                or isinstance(item_comanda_id, bool)
+                or item_comanda_id <= 0
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Identificador do item da comanda invalido.",
+                )
+
+            item_consumo = (
+                db.query(models.ItemComanda)
+                .filter(
+                    models.ItemComanda.id == item_comanda_id,
+                    models.ItemComanda.comanda_id == comanda.id,
+                )
+                .with_for_update()
+                .first()
+            )
+
+            if item_consumo is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Item nao encontrado nesta comanda.",
+                )
+
+            if (
+                item_consumo.tipo != "servico"
+                or item_consumo.servico_id != servico.id
+                or item_consumo.quantidade != 1
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Item incompativel com o consumo solicitado.",
+                )
+
+            if (
+                item_consumo.pago_com_plano
+                or item_consumo.uso_plano_id is not None
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="O item ja foi utilizado pelo plano.",
+                )
+
+            uso_do_item = (
+                db.query(models.UsoPlano)
+                .filter(
+                    models.UsoPlano.item_comanda_id == item_comanda_id
+                )
+                .first()
+            )
+
+            if uso_do_item is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Ja existe consumo registrado para este item.",
+                )
+
         uso_existente = (
             db.query(models.UsoPlano)
             .filter(
@@ -993,6 +1059,30 @@ def usar_plano_service(
                 detail="Este serviço não está incluído no plano do cliente.",
             )
 
+
+        # BARBSIST_P9_8F2_CONSUMO_DIRETO
+        ciclo_consumo_id = None
+
+        import os
+
+        ciclos_ativos = (
+            os.getenv(
+                "BARBSIST_CICLOS_PAGAMENTO_OPTIN", "NAO"
+            ).strip().upper() == "SIM"
+        )
+
+        if ciclos_ativos:
+            from services.plano_ciclo_consumo_reservado import (
+                validar_consumo_ciclo,
+            )
+
+            ciclo_consumo_id = validar_consumo_ciclo(
+                db,
+                assinatura=assinatura,
+                comanda=comanda,
+                servico_id=servico.id,
+            )
+
         usos = assinatura.usos_disponiveis or 0
         if usos <= 0:
             raise HTTPException(
@@ -1002,8 +1092,10 @@ def usar_plano_service(
 
         uso = models.UsoPlano(
             assinatura_id=assinatura.id,
+            plano_ciclo_id=ciclo_consumo_id,
             comanda_id=comanda.id,
             servico_id=servico.id,
+            item_comanda_id=item_comanda_id,
         )
 
         assinatura.usos_disponiveis = usos - 1
@@ -1034,10 +1126,11 @@ def usar_plano_service(
     except Exception as erro:
         if realizar_commit:
             db.rollback()
+        logger.exception("Falha interna na utilizacao do plano")
         raise HTTPException(
             status_code=500,
-            detail=f"Erro ao utilizar o plano: {str(erro)}",
-        )
+            detail="Nao foi possivel utilizar o plano.",
+        ) from None
 
 
 # =========================
@@ -1693,6 +1786,24 @@ def confirmar_pagamento_assinatura_service(
             else valor_cobranca_assinatura(assinatura_bloqueada, plano.valor)
         )
 
+        # BARBSIST_P9_5E_CICLO_PAGAMENTO
+        # Desligado por padrao. Nao ativar sem migracoes
+        # e homologacao transacional completa.
+        import os
+
+        ciclos_optin = os.getenv(
+            "BARBSIST_CICLOS_PAGAMENTO_OPTIN", "NAO"
+        ).strip().upper() == "SIM"
+
+        estado_anterior_ciclo = None
+        if ciclos_optin:
+            from services.plano_ciclo_periodos_pagamento import (
+                capturar_estado_anterior,
+            )
+            estado_anterior_ciclo = capturar_estado_anterior(
+                assinatura_bloqueada
+            )
+
         agora = datetime.now()
         _aplicar_renovacao_assinatura(
             assinatura_bloqueada,
@@ -1728,6 +1839,20 @@ def confirmar_pagamento_assinatura_service(
         db.add(pagamento)
         db.flush()
 
+        if ciclos_optin:
+            from services.plano_ciclo_integracao_pagamento import (
+                registrar_ciclo_da_confirmacao,
+            )
+            registrar_ciclo_da_confirmacao(
+                db,
+                assinatura=assinatura_bloqueada,
+                plano=plano,
+                pagamento=pagamento,
+                estado_anterior=estado_anterior_ciclo,
+                agora=agora,
+            )
+            db.flush()
+
         if realizar_commit:
             db.commit()
             db.refresh(assinatura_bloqueada)
@@ -1735,13 +1860,34 @@ def confirmar_pagamento_assinatura_service(
         return assinatura_bloqueada
 
     except IntegrityError:
+        # BARBSIST_P9_6E2_INTEGRIDADE
+        # Conflito SQL nao significa necessariamente duplicidade.
         if realizar_commit:
             db.rollback()
+
+        import os as _os_p96e2
+
+        _ciclos_ativos_p96e2 = (
+            _os_p96e2.getenv(
+                "BARBSIST_CICLOS_PAGAMENTO_OPTIN", "NAO"
+            ).strip().upper() == "SIM"
+        )
+
+        if _ciclos_ativos_p96e2:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Conflito de integridade na confirmacao "
+                    "do pagamento ou registro do ciclo. "
+                    "A operacao requer conciliacao."
+                ),
+            )
+
         raise HTTPException(
             status_code=409,
             detail=(
-                "Já existe pagamento confirmado para esta assinatura "
-                f"na referência {referencia}."
+                "Ja existe pagamento confirmado para esta assinatura "
+                f"na referencia {referencia}."
             ),
         )
 
@@ -1753,7 +1899,8 @@ def confirmar_pagamento_assinatura_service(
     except Exception as erro:
         if realizar_commit:
             db.rollback()
+        logger.exception("Falha interna na confirmacao de pagamento do plano")
         raise HTTPException(
             status_code=500,
-            detail=f"Erro ao confirmar pagamento do plano: {str(erro)}",
-        )
+            detail="Nao foi possivel confirmar o pagamento do plano.",
+        ) from None

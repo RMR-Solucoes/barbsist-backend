@@ -1188,6 +1188,26 @@ class Agendamento(BarbeariaMixin, Base):
         default="avulso"
     )  # plano ou avulso
 
+    # BARBSIST_P9_3A_VINCULO_ASSINATURA
+    # Campos opcionais para agendamentos por plano.
+    # Registros legados e atendimentos avulsos continuam com NULL.
+    assinatura_cliente_id = Column(
+        Integer,
+        ForeignKey("assinaturas_clientes.id"),
+        nullable=True,
+    )
+
+    # BARBSIST_P9_3Y_VINCULO_CICLO
+    plano_ciclo_id = Column(
+        Integer,
+        ForeignKey("plano_ciclos_clientes.id"),
+        nullable=True,
+    )
+
+    plano_ciclo_inicio = Column(DateTime, nullable=True)
+    plano_ciclo_fim = Column(DateTime, nullable=True)
+
+
     # INTERNO | ONLINE | WHATSAPP
     origem = Column(
         String,
@@ -1501,11 +1521,28 @@ class UsoPlano(Base):
         nullable=False
     )
 
+    # BARBSIST_P9_3Y_VINCULO_CICLO
+    plano_ciclo_id = Column(
+        Integer,
+        ForeignKey("plano_ciclos_clientes.id"),
+        nullable=True,
+    )
+
+
     comanda_id = Column(
         Integer,
         ForeignKey("comandas.id"),
         nullable=True
     )
+
+    # BARBSIST_P9_4J_USO_ITEM
+    item_comanda_id = Column(
+        Integer,
+        ForeignKey("itens_comanda.id"),
+        nullable=True,
+        unique=True,
+    )
+
 
     servico_id = Column(
         Integer,
@@ -2356,3 +2393,105 @@ class TesteGratuitoSaaSClaim(Base):
         nullable=False,
         default=datetime.now,
     )
+
+
+# BARBSIST_P9_4B_MODELO_CICLO
+# Modelo declarativo da tabela preparada na migracao P9.3O.
+# A migracao continua responsavel pela criacao fisica e pelas
+# restricoes compostas de isolamento no PostgreSQL.
+from sqlalchemy import ForeignKeyConstraint, UniqueConstraint, CheckConstraint, Index
+
+class PlanoCicloCliente(Base):
+    __tablename__ = "plano_ciclos_clientes"
+
+    # BARBSIST_P9_4D_FKS_COMPOSTAS
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["barbearia_id"], ["barbearias.id"],
+            name="fk_p93o_barbearia",
+        ),
+        ForeignKeyConstraint(
+            ["assinatura_id", "barbearia_id"],
+            ["assinaturas_clientes.id", "assinaturas_clientes.barbearia_id"],
+            name="fk_p93o_assinatura_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["plano_id", "barbearia_id"],
+            ["planos.id", "planos.barbearia_id"],
+            name="fk_p93o_plano_tenant",
+        ),
+        ForeignKeyConstraint(
+            ["pagamento_plano_id", "assinatura_id", "plano_id"],
+            [
+                "pagamentos_planos.id",
+                "pagamentos_planos.assinatura_id",
+                "pagamentos_planos.plano_id",
+            ],
+            name="fk_p93o_pagamento_vinculo",
+        ),
+        UniqueConstraint(
+            "pagamento_plano_id",
+            name="uq_plano_ciclo_pagamento",
+        ),
+        CheckConstraint(
+            "creditos_concedidos >= 0",
+            name="ck_plano_ciclo_creditos",
+        ),
+        CheckConstraint(
+            "periodo_fim > periodo_inicio",
+            name="ck_plano_ciclo_periodo",
+        ),
+        Index(
+            "ix_plano_ciclos_tenant_assinatura",
+            "barbearia_id", "assinatura_id",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    barbearia_id = Column(
+        Integer, nullable=False
+    )
+    assinatura_id = Column(
+        Integer, nullable=False
+    )
+    plano_id = Column(
+        Integer, nullable=False
+    )
+    pagamento_plano_id = Column(
+        Integer, nullable=False
+    )
+    periodo_inicio = Column(DateTime, nullable=False)
+    periodo_fim = Column(DateTime, nullable=False)
+    creditos_concedidos = Column(Integer, nullable=False)
+    referencia_mes = Column(String(20), nullable=True)
+    criado_em = Column(DateTime, nullable=False, default=datetime.now)
+
+
+# ===== BARBSIST_P9_5X_INDICES_CICLOS =====
+# Indices compostos que sustentam as FKs dos ciclos pagos.
+# Os mesmos nomes constam da migracao P9.3K/P9.3O.
+# Este bloco nao executa migracoes nem acessa o banco.
+from sqlalchemy import Index as _BarbSistIndexCiclos
+
+_BarbSistIndexCiclos(
+    "uq_p93o_assinatura_tenant",
+    AssinaturaCliente.__table__.c.id,
+    AssinaturaCliente.__table__.c.barbearia_id,
+    unique=True,
+)
+
+_BarbSistIndexCiclos(
+    "uq_p93o_plano_tenant",
+    Plano.__table__.c.id,
+    Plano.__table__.c.barbearia_id,
+    unique=True,
+)
+
+_BarbSistIndexCiclos(
+    "uq_p93o_pagamento_vinculo",
+    PagamentoPlano.__table__.c.id,
+    PagamentoPlano.__table__.c.assinatura_id,
+    PagamentoPlano.__table__.c.plano_id,
+    unique=True,
+)
+# ===== FIM BARBSIST_P9_5X_INDICES_CICLOS =====

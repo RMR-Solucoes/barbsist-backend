@@ -379,10 +379,34 @@ def criar_agendamento_service(db, dados, usuario_logado):
             .first()
         )
 
+    # P11-A85: ao habilitar ciclos, nunca converter silenciosamente
+    # uma solicitacao de plano sem assinatura em atendimento avulso.
+    import os
+    ciclos_ativos = (
+        os.getenv("BARBSIST_CICLOS_PAGAMENTO_OPTIN", "NAO")
+        .strip().upper() == "SIM"
+    )
     if assinatura is None:
+        if ciclos_ativos and tipo_atendimento == "plano":
+            raise HTTPException(
+                status_code=409,
+                detail="Assinatura nao encontrada para reserva por plano.",
+            )
         tipo_atendimento = "avulso"
 
     elif tipo_atendimento == "plano":
+        if ciclos_ativos:
+            # Serializar reservas concorrentes da mesma assinatura.
+            assinatura = (
+                db.query(models.AssinaturaCliente)
+                .filter(
+                    models.AssinaturaCliente.id == assinatura.id,
+                    models.AssinaturaCliente.barbearia_id == barbearia_id,
+                    models.AssinaturaCliente.cliente_id == cliente.id,
+                )
+                .with_for_update(of=models.AssinaturaCliente)
+                .one()
+            )
         if (assinatura.status or "").upper() != "ATIVO":
             raise HTTPException(
                 status_code=400,
@@ -481,6 +505,20 @@ def criar_agendamento_service(db, dados, usuario_logado):
         usuario_logado=usuario_logado,
     )
 
+    ciclo_reservado = None
+    if ciclos_ativos and tipo_atendimento == "plano":
+        # Deve ocorrer ANTES de inserir e na transacao que manteve
+        # o FOR UPDATE da assinatura. A propria validacao verifica
+        # o pagamento, o ciclo e reservas existentes.
+        from services.plano_ciclo_reserva_db import validar_reserva_ciclo
+
+        ciclo_reservado = validar_reserva_ciclo(
+            db,
+            assinatura=assinatura,
+            data_atendimento=inicio,
+            quantidade_servicos=len(servicos),
+        )
+
     agendamento = models.Agendamento(
         barbearia_id=barbearia_id,
         cliente_id=dados.cliente_id,
@@ -494,6 +532,20 @@ def criar_agendamento_service(db, dados, usuario_logado):
         observacoes=dados.observacoes,
         tipo_atendimento=tipo_atendimento,
         origem=getattr(dados, "origem", "INTERNO") or "INTERNO",
+        assinatura_cliente_id=(
+            assinatura.id if ciclo_reservado is not None else None
+        ),
+        plano_ciclo_id=(
+            ciclo_reservado.id if ciclo_reservado is not None else None
+        ),
+        plano_ciclo_inicio=(
+            ciclo_reservado.periodo_inicio
+            if ciclo_reservado is not None else None
+        ),
+        plano_ciclo_fim=(
+            ciclo_reservado.periodo_fim
+            if ciclo_reservado is not None else None
+        ),
     )
 
     try:
@@ -597,6 +649,53 @@ def cancelar_agendamento_service(db, agendamento_id: int, usuario_logado):
             status_code=400,
             detail="Agendamento já está concluído ou cancelado.",
         )
+
+    # P11-A85: um atendimento com comanda vinculada nao pode
+    # liberar uma reserva por simples cancelamento de agenda.
+    # A reversao financeira da comanda exige fluxo proprio.
+    import os
+    if (
+        os.getenv("BARBSIST_CICLOS_PAGAMENTO_OPTIN", "NAO")
+        .strip().upper() == "SIM"
+        and (agendamento.tipo_atendimento or "").lower() == "plano"
+    ):
+        assinatura_cancelamento = (
+            db.query(models.AssinaturaCliente)
+            .filter(
+                models.AssinaturaCliente.id == agendamento.assinatura_cliente_id,
+                models.AssinaturaCliente.barbearia_id == agendamento.barbearia_id,
+                models.AssinaturaCliente.cliente_id == agendamento.cliente_id,
+            )
+            .with_for_update(of=models.AssinaturaCliente)
+            .first()
+        )
+        if agendamento.plano_ciclo_id is None or assinatura_cancelamento is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Reserva sem vinculo financeiro valido; requer conciliacao.",
+            )
+        comanda_vinculada = (
+            db.query(models.Comanda.id)
+            .filter(
+                models.Comanda.barbearia_id == agendamento.barbearia_id,
+                models.Comanda.agendamento_id == agendamento.id,
+            )
+            .first()
+        )
+        if comanda_vinculada is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Agendamento vinculado a comanda; cancelamento protegido.",
+            )
+        # Reavaliar status apos adquirir bloqueio da assinatura.
+        db.refresh(agendamento)
+        if (agendamento.status or "").lower() not in (
+            "agendado", "confirmado", "reagendado"
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Estado do agendamento incompativel com cancelamento.",
+            )
 
     agendamento.status = "cancelado"
 

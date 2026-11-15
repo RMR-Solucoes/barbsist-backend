@@ -3,6 +3,9 @@ import re
 from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.security import HTTPAuthorizationCredentials
+from portal_cliente.models import PortalClienteConfiguracao
+from portal_cliente.security import bearer_cliente, obter_acesso_cliente
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -10,7 +13,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 import models
 from schemas import AgendamentoCreate, AgendamentoResponse
-from services.agendamento_service import criar_agendamento_service
+from services.agendamento_service import criar_agendamento_service, cancelar_agendamento_service
 from services.adequacao_plano_saas_service import (
     barbeiro_bloqueado_por_plano,
     validar_barbeiro_liberado_por_plano,
@@ -157,6 +160,19 @@ def consultar_barbearia_publica(
         "cor_fundo": barbearia.cor_fundo,
         "cor_destaque": barbearia.cor_destaque,
         "permitir_agendamento_portal": agendamento_online_habilitado(db, barbearia.id),
+        # BARBSIST_P9_2R - Politica publica da barbearia.
+        "agendamento_exige_plano_cliente": bool(
+            (
+                db.query(PortalClienteConfiguracao)
+                .filter(
+                    PortalClienteConfiguracao.barbearia_id == barbearia.id
+                )
+                .first()
+                or SimpleNamespace(
+                    agendamento_exige_plano_cliente=False
+                )
+            ).agendamento_exige_plano_cliente
+        ),
     }
 
 
@@ -557,6 +573,7 @@ def criar_agendamento_online(
     barbearia_slug: str,
     dados: AgendamentoOnlineCreate,
     db: Session = Depends(get_db),
+    credenciais: HTTPAuthorizationCredentials | None = Depends(bearer_cliente),
 ):
     barbearia = obter_barbearia_publica(
         db,
@@ -585,12 +602,51 @@ def criar_agendamento_online(
         ids,
     )
 
-    cliente = obter_ou_criar_cliente_por_telefone(
-        db=db,
-        barbearia=barbearia,
-        nome=dados.nome_cliente,
-        telefone=dados.telefone_cliente,
+    # BARBSIST_P9_2I_AGENDAMENTO_EXCLUSIVO
+    config_plano = (
+        db.query(PortalClienteConfiguracao)
+        .filter(
+            PortalClienteConfiguracao.barbearia_id == barbearia.id
+        )
+        .first()
     )
+    exclusivo = bool(
+        config_plano
+        and config_plano.agendamento_exige_plano_cliente
+    )
+
+    # P10-D14J.31-D: o cliente pode optar por usar o plano
+    # mesmo quando a barbearia tambem aceita atendimento avulso.
+    solicitado = (dados.tipo_atendimento or "avulso").strip().lower()
+    if solicitado not in ("avulso", "plano"):
+        raise HTTPException(status_code=400, detail="Tipo de atendimento invalido.")
+
+    if exclusivo or solicitado == "plano":
+        # Identidade autenticada: nunca usar telefone como prova
+        # de titularidade de um plano.
+        acesso = obter_acesso_cliente(
+            credenciais=credenciais,
+            db=db,
+        )
+
+        if acesso.barbearia_id != barbearia.id:
+            raise HTTPException(
+                status_code=403,
+                detail="Cliente nao pertence a esta barbearia.",
+            )
+
+        cliente = acesso.cliente
+        tipo_atendimento = "plano"
+    else:
+        # Preserva integralmente o agendamento publico avulso.
+        cliente = obter_ou_criar_cliente_por_telefone(
+            db=db,
+            barbearia=barbearia,
+            nome=dados.nome_cliente,
+            telefone=dados.telefone_cliente,
+        )
+        # Agendamento publico sem autenticacao nao pode consumir plano.
+        tipo_atendimento = "avulso"
 
     dados_agendamento = AgendamentoCreate(
         cliente_id=cliente.id,
@@ -598,7 +654,7 @@ def criar_agendamento_online(
         servico_id=ids[0],
         servicos_ids=ids,
         data_hora_inicio=dados.data_hora_inicio,
-        tipo_atendimento=dados.tipo_atendimento,
+        tipo_atendimento=tipo_atendimento,
         observacoes=dados.observacoes,
         origem="ONLINE",
     )
@@ -617,11 +673,26 @@ def consultar_agendamento(
     barbearia_slug: str,
     telefone: str,
     db: Session = Depends(get_db),
+    credenciais: HTTPAuthorizationCredentials | None = Depends(bearer_cliente),
 ):
     barbearia = obter_barbearia_publica(
         db,
         barbearia_slug,
     )
+    # A68-D52: autenticar JWT antes do telefone.
+    # Sem credenciais, preservar consulta publica avulsa.
+    acesso = None
+    if credenciais is not None:
+        acesso = obter_acesso_cliente(
+            credenciais=credenciais,
+            db=db,
+        )
+        if acesso.barbearia_id != barbearia.id:
+            raise HTTPException(
+                status_code=403,
+                detail="Cliente nao autorizado para esta barbearia.",
+            )
+
     cliente = buscar_cliente_por_telefone(
         db,
         barbearia.id,
@@ -634,6 +705,12 @@ def consultar_agendamento(
             detail="Nenhum agendamento encontrado.",
         )
 
+    if acesso is not None and acesso.cliente_id != cliente.id:
+        raise HTTPException(
+            status_code=403,
+            detail="Cliente nao autorizado para esta consulta.",
+        )
+
     agendamentos = (
         db.query(models.Agendamento)
         .filter(
@@ -641,6 +718,17 @@ def consultar_agendamento(
             == barbearia.id,
             models.Agendamento.cliente_id
             == cliente.id,
+            # BARBSIST_C3OF2B1_PROTECAO_CONSULTA_PLANO
+            *(
+                []
+                if credenciais is not None
+                else [
+                    func.coalesce(
+                        func.lower(models.Agendamento.tipo_atendimento),
+                        "avulso",
+                    ) != "plano"
+                ]
+            ),
             func.lower(models.Agendamento.status)
             != "cancelado",
             models.Agendamento.data_hora_inicio
@@ -697,6 +785,13 @@ def consultar_agendamento(
             "origem": item.origem,
         })
 
+    # BARBSIST_C3OF2B3_SEM_IDENTIFICACAO_SEM_RESERVA
+    if not resultado:
+        raise HTTPException(
+            status_code=404,
+            detail="Nenhum agendamento encontrado.",
+        )
+
     return {
         "cliente": cliente.nome,
         "telefone": cliente.telefone,
@@ -710,47 +805,51 @@ def cancelar_agendamento_online(
     telefone: str,
     agendamento_id: int,
     db: Session = Depends(get_db),
+    credenciais: HTTPAuthorizationCredentials | None = Depends(bearer_cliente),
 ):
     barbearia = obter_barbearia_publica(db, barbearia_slug)
-    cliente = buscar_cliente_por_telefone(db, barbearia.id, telefone)
-
-    if not cliente:
-        raise HTTPException(
-            status_code=404,
-            detail="Cliente não encontrado para este telefone.",
-        )
-
+    # Localiza apenas na barbearia; titularidade sera verificada abaixo.
     agendamento = (
         db.query(models.Agendamento)
         .filter(
             models.Agendamento.id == agendamento_id,
             models.Agendamento.barbearia_id == barbearia.id,
-            models.Agendamento.cliente_id == cliente.id,
         )
         .first()
     )
+    if agendamento is None:
+        raise HTTPException(status_code=404, detail="Agendamento nao encontrado.")
 
-    if not agendamento:
-        raise HTTPException(
-            status_code=404,
-            detail="Agendamento não pertence ao telefone informado.",
-        )
-    if (agendamento.status or "").lower() == "cancelado":
-        raise HTTPException(status_code=400, detail="Agendamento já cancelado.")
+    if (agendamento.tipo_atendimento or "").lower() == "plano":
+        # Nao permitir cancelamento por telefone de creditos de assinante.
+        acesso = obter_acesso_cliente(credenciais=credenciais, db=db)
+        if (
+            acesso.barbearia_id != barbearia.id
+            or acesso.cliente.id != agendamento.cliente_id
+        ):
+            raise HTTPException(status_code=403, detail="Cliente nao autorizado.")
+    else:
+        # Legado avulso continua usando telefone.
+        cliente = buscar_cliente_por_telefone(db, barbearia.id, telefone)
+        if cliente is None or cliente.id != agendamento.cliente_id:
+            raise HTTPException(
+                status_code=404,
+                detail="Agendamento nao pertence ao telefone informado.",
+            )
+
     if agendamento.data_hora_inicio <= datetime.now():
         raise HTTPException(
             status_code=400,
             detail="Não é possível cancelar agendamentos passados.",
         )
 
-    observacao = agendamento.observacoes or ""
-    agendamento.status = "cancelado"
-    agendamento.observacoes = (
-        observacao + "\nCancelado pelo cliente via portal online."
-    ).strip()
-    db.commit()
-    db.refresh(agendamento)
-
+    # Um unico servico faz bloqueio, validacao de comanda e commit.
+    agendamento = cancelar_agendamento_service(
+        db=db,
+        agendamento_id=agendamento_id,
+        usuario_logado=criar_contexto_publico(barbearia.id),
+        observacao_cancelamento="Cancelado pelo cliente via portal online.",
+    )
     return {
         "mensagem": "Agendamento cancelado com sucesso.",
         "agendamento_id": agendamento.id,

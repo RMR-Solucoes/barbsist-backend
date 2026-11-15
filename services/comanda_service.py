@@ -514,10 +514,12 @@ def usar_plano_em_item_comanda_service(
                 )
             )
 
+        # BARBSIST_P9_4L_ENVIO_ITEM
         dados_uso = SimpleNamespace(
             assinatura_id=assinatura.id,
             comanda_id=comanda.id,
-            servico_id=item.servico_id
+            servico_id=item.servico_id,
+            item_comanda_id=item.id,
         )
 
         uso = usar_plano_service(
@@ -586,6 +588,108 @@ def usar_plano_em_item_comanda_service(
         )
 
 
+def _barbsist_perm31_validar_fechamento_reservado(db, comanda, itens):
+    # BARBSIST_PERM31_G1_FECHAMENTO_RESERVA
+    from collections import Counter
+    from fastapi import HTTPException
+
+    if comanda.agendamento_id is None:
+        return
+
+    agenda = (
+        db.query(models.Agendamento)
+        .filter(
+            models.Agendamento.id == comanda.agendamento_id,
+            models.Agendamento.barbearia_id == comanda.barbearia_id,
+        )
+        .first()
+    )
+
+    if agenda is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Agendamento da comanda nao encontrado.",
+        )
+
+    if (
+        (agenda.tipo_atendimento or "").lower() != "plano"
+        or agenda.plano_ciclo_id is None
+    ):
+        return
+
+    if (
+        agenda.cliente_id != comanda.cliente_id
+        or agenda.assinatura_cliente_id is None
+        or (agenda.status or "").lower() != "em_atendimento"
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Reserva da comanda em estado divergente.",
+        )
+
+    vinculos = (
+        db.query(models.AgendamentoServico.servico_id)
+        .filter(
+            models.AgendamentoServico.agendamento_id == agenda.id
+        )
+        .all()
+    )
+
+    reservados = (
+        [int(v[0]) for v in vinculos]
+        if vinculos
+        else (
+            [int(agenda.servico_id)]
+            if agenda.servico_id is not None
+            else []
+        )
+    )
+
+    if not reservados:
+        raise HTTPException(
+            status_code=409,
+            detail="Reserva sem servicos identificados.",
+        )
+
+    consumidos = []
+
+    for item in itens:
+        if item.tipo != "servico" or item.pago_com_plano is not True:
+            continue
+
+        uso = (
+            db.query(models.UsoPlano)
+            .filter(
+                models.UsoPlano.id == item.uso_plano_id,
+                models.UsoPlano.item_comanda_id == item.id,
+                models.UsoPlano.comanda_id == comanda.id,
+                models.UsoPlano.assinatura_id == agenda.assinatura_cliente_id,
+                models.UsoPlano.plano_ciclo_id == agenda.plano_ciclo_id,
+                models.UsoPlano.servico_id == item.servico_id,
+            )
+            .first()
+            if item.uso_plano_id is not None
+            else None
+        )
+
+        if uso is None or item.quantidade != 1:
+            raise HTTPException(
+                status_code=409,
+                detail="Consumo do plano divergente na comanda.",
+            )
+
+        consumidos.append(int(item.servico_id))
+
+    if Counter(consumidos) != Counter(reservados):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Existem creditos reservados ainda nao aplicados "
+                "aos servicos da comanda."
+            ),
+        )
+
+
 def fechar_comanda_service(
     db,
     comanda_id: int,
@@ -646,6 +750,8 @@ def fechar_comanda_service(
                     "comanda sem itens."
                 )
             )
+
+        _barbsist_perm31_validar_fechamento_reservado(db, comanda, itens)
 
         total_devido = (
             calcular_total_devido_comanda(
@@ -871,14 +977,86 @@ def _reverter_item_aberto(
         and item.pago_com_plano
         and item.uso_plano_id
     ):
-        uso = (
-            db.query(models.UsoPlano)
-            .filter(
-                models.UsoPlano.id == item.uso_plano_id
+        # BARBSIST_P9_8F5E3B_LOCK_ASSINATURA_PRIMEIRO
+        import os as _barbsist_os_f5e3b
+
+        if (
+            _barbsist_os_f5e3b.getenv(
+                "BARBSIST_CICLOS_PAGAMENTO_OPTIN", "NAO"
+            ).strip().upper() == "SIM"
+        ):
+            _uso_previo_f5e3b = (
+                db.query(models.UsoPlano)
+                .filter(
+                    models.UsoPlano.id == item.uso_plano_id
+                )
+                .first()
             )
-            .with_for_update()
-            .first()
-        )
+
+            if _uso_previo_f5e3b is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Consumo do item nao encontrado para reversao.",
+                )
+
+            if (
+                _uso_previo_f5e3b.comanda_id != comanda.id
+                or _uso_previo_f5e3b.item_comanda_id != item.id
+                or _uso_previo_f5e3b.servico_id != item.servico_id
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Consumo nao corresponde ao item da comanda.",
+                )
+
+            _assinatura_f5e3b = (
+                db.query(models.AssinaturaCliente)
+                .filter(
+                    models.AssinaturaCliente.id
+                    == _uso_previo_f5e3b.assinatura_id,
+                    models.AssinaturaCliente.barbearia_id
+                    == comanda.barbearia_id,
+                )
+                .with_for_update(of=models.AssinaturaCliente)
+                .first()
+            )
+
+            if _assinatura_f5e3b is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Assinatura do consumo nao encontrada.",
+                )
+
+            uso = (
+                db.query(models.UsoPlano)
+                .filter(
+                    models.UsoPlano.id == item.uso_plano_id
+                )
+                .with_for_update(of=models.UsoPlano)
+                .populate_existing()
+                .first()
+            )
+
+            if (
+                uso is None
+                or uso.assinatura_id != _assinatura_f5e3b.id
+                or uso.comanda_id != comanda.id
+                or uso.item_comanda_id != item.id
+                or uso.servico_id != item.servico_id
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Vinculo do consumo alterado durante a reversao.",
+                )
+        else:
+            uso = (
+                        db.query(models.UsoPlano)
+                        .filter(
+                            models.UsoPlano.id == item.uso_plano_id
+                        )
+                        .with_for_update()
+                        .first()
+                    )
 
         if uso:
             assinatura = (
@@ -888,7 +1066,7 @@ def _reverter_item_aberto(
                     models.AssinaturaCliente.barbearia_id
                     == comanda.barbearia_id,
                 )
-                .with_for_update()
+                .with_for_update(of=models.AssinaturaCliente)
                 .first()
             )
 
@@ -897,7 +1075,13 @@ def _reverter_item_aberto(
                     assinatura.usos_disponiveis or 0
                 ) + 1
 
+            # BARBSIST_P9_8F5D5D_DESVINCULAR_ANTES_DELETE
+            item.uso_plano_id = None
+            item.pago_com_plano = False
+            db.flush()
             db.delete(uso)
+            # BARBSIST_P9_8F5D5C_FLUSH_USO
+            db.flush()
 
         item.pago_com_plano = False
         item.uso_plano_id = None
@@ -1016,6 +1200,42 @@ def cancelar_comanda_service(
                 comanda,
                 usuario_id=getattr(usuario_logado, "id", None),
             )
+
+        # BARBSIST_P9_8F5D7B_CANCELAMENTO_VINCULADO
+        import os as _barbsist_os_f5d7b
+        if (
+            _barbsist_os_f5d7b.getenv(
+                "BARBSIST_CICLOS_PAGAMENTO_OPTIN", "NAO"
+            ).strip().upper() == "SIM"
+            and comanda.agendamento_id is not None
+        ):
+            _ag_f5d7b = (
+                db.query(models.Agendamento)
+                .filter(
+                    models.Agendamento.id == comanda.agendamento_id,
+                    models.Agendamento.barbearia_id == comanda.barbearia_id,
+                )
+                .with_for_update(of=models.Agendamento)
+                .first()
+            )
+            if _ag_f5d7b is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Agendamento vinculado nao encontrado.",
+                )
+            if (
+                _ag_f5d7b.tipo_atendimento == "plano"
+                and _ag_f5d7b.plano_ciclo_id is not None
+            ):
+                if (
+                    (_ag_f5d7b.status or "").lower()
+                    != "em_atendimento"
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Estado do agendamento incompativel com o cancelamento da comanda.",
+                    )
+                _ag_f5d7b.status = "cancelado"
 
         comanda.status = "cancelada"
         comanda.total = 0

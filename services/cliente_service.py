@@ -431,8 +431,9 @@ def listar_clientes_com_assinaturas_service(
         apenas_ativos=True
     )
 
+    from types import SimpleNamespace
+
     resultado = []
-    houve_alteracao = False
 
     for cliente in clientes:
         assinaturas = (
@@ -450,28 +451,23 @@ def listar_clientes_com_assinaturas_service(
             .all()
         )
 
+        estados = {}
+
         for assinatura in assinaturas:
-            status_anterior = assinatura.status
-            pagamento_anterior = (
-                assinatura.status_pagamento
+            estado = SimpleNamespace(
+                status=assinatura.status,
+                status_pagamento=assinatura.status_pagamento,
+                data_proximo_vencimento=assinatura.data_proximo_vencimento,
+                dias_tolerancia=assinatura.dias_tolerancia,
             )
-
-            atualizar_status_assinatura(
-                assinatura
-            )
-
-            if (
-                assinatura.status != status_anterior
-                or assinatura.status_pagamento
-                != pagamento_anterior
-            ):
-                houve_alteracao = True
+            atualizar_status_assinatura(estado)
+            estados[assinatura.id] = estado
 
         assinatura_atual = next(
             (
                 assinatura
                 for assinatura in assinaturas
-                if assinatura.status in {
+                if estados[assinatura.id].status in {
                     "ATIVO",
                     "VENCIDO",
                     "SUSPENSO"
@@ -485,6 +481,12 @@ def listar_clientes_com_assinaturas_service(
             and assinaturas
         ):
             assinatura_atual = assinaturas[0]
+
+        estado_atual = (
+            estados[assinatura_atual.id]
+            if assinatura_atual is not None
+            else None
+        )
 
         plano = None
 
@@ -524,14 +526,14 @@ def listar_clientes_com_assinaturas_service(
             ),
 
             "assinatura_status": (
-                assinatura_atual.status
-                if assinatura_atual
+                estado_atual.status
+                if estado_atual
                 else None
             ),
 
             "status_pagamento": (
-                assinatura_atual.status_pagamento
-                if assinatura_atual
+                estado_atual.status_pagamento
+                if estado_atual
                 else None
             ),
 
@@ -566,8 +568,6 @@ def listar_clientes_com_assinaturas_service(
             )
         })
 
-    if houve_alteracao:
-        db.commit()
 
     return resultado
 
