@@ -49,6 +49,7 @@ class PortalClienteConfiguracao(Base):
     id = Column(Integer, primary_key=True, index=True)
     barbearia_id = Column(Integer, ForeignKey("barbearias.id", ondelete="CASCADE"), nullable=False, index=True)
     permitir_agendamento_portal = Column(Boolean, default=False, nullable=False)
+    agendamento_exige_plano_cliente = Column(Boolean, default=False, nullable=False)
     criado_em = Column(DateTime, default=datetime.utcnow, nullable=False)
     atualizado_em = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     barbearia = relationship("Barbearia")

@@ -40,6 +40,7 @@ class AlterarSenhaRequest(BaseModel):
 
 class ConfiguracaoPortalUpdate(BaseModel):
     permitir_agendamento_portal: bool
+    agendamento_exige_plano_cliente: bool | None = None
 
 
 class TokenResponse(BaseModel):
@@ -151,6 +152,7 @@ class AcessoResponse(BaseModel):
 
 class ConfiguracaoPortalResponse(BaseModel):
     permitir_agendamento_portal: bool
+    agendamento_exige_plano_cliente: bool
 
 
 class PortalComandaItemResponse(BaseModel):
