@@ -407,7 +407,7 @@ def criar_agendamento_service(db, dados, usuario_logado):
                 .with_for_update(of=models.AssinaturaCliente)
                 .one()
             )
-        if (assinatura.status or "").upper() != "ATIVO":
+        if (assinatura.status or "").upper() not in ("ATIVO", "ATIVA"):
             raise HTTPException(
                 status_code=400,
                 detail=(

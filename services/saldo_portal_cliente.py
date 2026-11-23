@@ -1,4 +1,4 @@
-﻿"""BARBSIST F3C5-A9B2 — candidato isolado.
+"""BARBSIST F3C5-A9B2 — candidato isolado.
 
 Consulta somente leitura. Nao altera creditos ou agendamentos.
 Ainda nao integrado a API oficial.
@@ -10,6 +10,9 @@ from fastapi import HTTPException
 from sqlalchemy import func, or_
 
 import models
+import os
+
+from services.saldo_legado_puro import calcular_saldo_legado_puro
 from services.plano_ciclo_resolucao_db import (
     obter_ciclo_pago_para_consumo,
 )
@@ -41,10 +44,70 @@ def calcular_saldo_portal_candidato(
         raise ValueError("Data de atendimento invalida.")
 
     if (
-        (assinatura.status or "").upper() != "ATIVO"
+        (assinatura.status or "").upper() not in ("ATIVO", "ATIVA")
         or (assinatura.status_pagamento or "").upper() != "PAGO"
     ):
         bloquear("Assinatura sem direito ativo para agendar.")
+
+    # PUBLICACAO-57: compatibilidade com o controle financeiro legado.
+    # A autenticacao e o isolamento por tenant continuam no endpoint.
+    modo_financeiro = os.getenv(
+        "BARBSIST_CICLOS_PAGAMENTO_OPTIN", "NAO"
+    ).strip().upper()
+
+    if modo_financeiro not in ("NAO", "SIM"):
+        bloquear("Configuracao financeira invalida.")
+
+    if modo_financeiro == "NAO":
+        reservas_ativas = (
+            db.query(models.Agendamento)
+            .filter(
+                models.Agendamento.barbearia_id == assinatura.barbearia_id,
+                models.Agendamento.cliente_id == assinatura.cliente_id,
+                models.Agendamento.tipo_atendimento == "plano",
+                models.Agendamento.status.in_(
+                    ("agendado", "confirmado", "reagendado")
+                ),
+            )
+            .all()
+        )
+
+        ids_reservas = [item.id for item in reservas_ativas]
+        servicos_por_reserva = {}
+
+        if ids_reservas:
+            vinculos = (
+                db.query(models.AgendamentoServico)
+                .filter(
+                    models.AgendamentoServico.agendamento_id.in_(
+                        ids_reservas
+                    )
+                )
+                .all()
+            )
+
+            for vinculo in vinculos:
+                agendamento_id = vinculo.agendamento_id
+                servicos_por_reserva[agendamento_id] = (
+                    servicos_por_reserva.get(agendamento_id, 0) + 1
+                )
+
+        quantidades_reservadas = [
+            max(1, servicos_por_reserva.get(item.id, 0))
+            for item in reservas_ativas
+        ]
+
+        try:
+            return calcular_saldo_legado_puro(
+                status=(assinatura.status or "").upper(),
+                status_pagamento=(assinatura.status_pagamento or "").upper(),
+                data_fim=assinatura.data_fim,
+                data_atendimento=data_atendimento,
+                usos_disponiveis=int(assinatura.usos_disponiveis or 0),
+                quantidades_reservadas=quantidades_reservadas,
+            )
+        except (TypeError, ValueError) as erro:
+            bloquear(str(erro))
 
     try:
         ciclo = obter_ciclo_pago_para_consumo(
